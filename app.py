@@ -17,25 +17,25 @@ def get_embeddings():
     return OpenAIEmbeddings(model="text-embedding-ada-002")
 
 def ingest_pdf(uploaded_file):
-    # Save uploaded file to a temp location
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
-    # Load and chunk
+    
     loader = PyPDFLoader(tmp_path)
     documents = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = splitter.split_documents(documents)
 
-    # Embed and store
+
     embeddings = get_embeddings()
     PineconeVectorStore.from_documents(
         chunks,
         embeddings,
         index_name=os.getenv("PINECONE_INDEX_NAME")
     )
-    os.unlink(tmp_path)  # clean up temp file
+    os.unlink(tmp_path)  
     return len(chunks)
 
 def get_retriever():
@@ -81,7 +81,7 @@ st.set_page_config(page_title="RAG Chatbot", page_icon="📄")
 st.title("📄 Chat with your PDF")
 st.caption("Powered by LangChain + Pinecone + OpenAI")
 
-# Sidebar for PDF upload
+# Sidebar
 with st.sidebar:
     st.header("Upload your PDF")
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
