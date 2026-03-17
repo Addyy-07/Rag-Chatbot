@@ -12,55 +12,165 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 load_dotenv()
 
+st.set_page_config(
+    page_title="DocChat AI",
+    page_icon="🧠",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* Main background */
+    .stApp {
+        background-color: #0f1117;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #1a1d27;
+        border-right: 1px solid #2e3047;
+    }
+
+    /* Chat messages */
+    [data-testid="stChatMessage"] {
+        background-color: #1a1d27;
+        border-radius: 12px;
+        padding: 8px;
+        margin-bottom: 8px;
+        border: 1px solid #2e3047;
+    }
+
+    /* Chat input */
+    [data-testid="stChatInput"] {
+        background-color: #1a1d27;
+        border: 1px solid #2e3047;
+        border-radius: 12px;
+    }
+
+    /* Primary button */
+    .stButton > button {
+        width: 100%;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 10px;
+        font-weight: 600;
+        font-size: 15px;
+        cursor: pointer;
+    }
+    .stButton > button:hover {
+        opacity: 0.9;
+        transform: translateY(-1px);
+    }
+
+    /* File uploader */
+    [data-testid="stFileUploader"] {
+        background-color: #12151e;
+        border: 2px dashed #2e3047;
+        border-radius: 12px;
+        padding: 10px;
+    }
+
+    /* Success / info boxes */
+    .stAlert {
+        border-radius: 10px;
+    }
+
+    /* Title styling */
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0;
+    }
+    .sub-title {
+        color: #6b7280;
+        font-size: 1rem;
+        margin-top: 4px;
+        margin-bottom: 24px;
+    }
+
+    /* Stat cards */
+    .stat-card {
+        background-color: #1a1d27;
+        border: 1px solid #2e3047;
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+    }
+    .stat-number {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #667eea;
+    }
+    .stat-label {
+        font-size: 0.8rem;
+        color: #6b7280;
+        margin-top: 4px;
+    }
+
+    /* Sidebar section headers */
+    .sidebar-header {
+        color: #667eea;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ---- Helper functions ----
+
 @st.cache_resource
 def get_embeddings():
     return OpenAIEmbeddings(model="text-embedding-ada-002")
 
 def ingest_pdf(uploaded_file):
-    
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
-    
     loader = PyPDFLoader(tmp_path)
     documents = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = splitter.split_documents(documents)
 
-
     embeddings = get_embeddings()
     PineconeVectorStore.from_documents(
-        chunks,
-        embeddings,
+        chunks, embeddings,
         index_name=os.getenv("PINECONE_INDEX_NAME")
     )
-    os.unlink(tmp_path)  
-    return len(chunks)
+    os.unlink(tmp_path)
+    return len(chunks), len(documents)
 
-def get_retriever():
+def get_answer(question, chat_history):
     embeddings = get_embeddings()
     vectorstore = PineconeVectorStore(
         index_name=os.getenv("PINECONE_INDEX_NAME"),
         embedding=embeddings
     )
-    return vectorstore.as_retriever(search_kwargs={"k": 4})
-
-def get_answer(question, chat_history):
-    retriever = get_retriever()
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
     docs = retriever.invoke(question)
     context = "\n\n".join(doc.page_content for doc in docs)
 
     history_text = ""
     for msg in chat_history[-4:]:
-        if msg["role"] == "user":
-            history_text += f"Human: {msg['content']}\n"
-        else:
-            history_text += f"Assistant: {msg['content']}\n"
+        role = "Human" if msg["role"] == "user" else "Assistant"
+        history_text += f"{role}: {msg['content']}\n"
 
     prompt = ChatPromptTemplate.from_template("""
-You are a helpful assistant that answers questions based on the provided document context.
-If the answer isn't in the context, say "I couldn't find that in the document."
+You are a helpful AI assistant that answers questions based on the provided document context.
+Be concise, clear, and friendly. If the answer isn't in the context, say so honestly.
 
 Previous conversation:
 {history}
@@ -76,44 +186,94 @@ Answer:""")
     chain = prompt | llm | StrOutputParser()
     return chain.invoke({"history": history_text, "context": context, "question": question})
 
-# ----- UI -----
-st.set_page_config(page_title="RAG Chatbot", page_icon="📄")
-st.title("📄 Chat with your PDF")
-st.caption("Powered by LangChain + Pinecone + OpenAI")
-
-# Sidebar
+# ---- Sidebar ----
 with st.sidebar:
-    st.header("Upload your PDF")
-    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    st.markdown('<p class="sidebar-header">📂 Document</p>', unsafe_allow_html=True)
+
+    uploaded_file = st.file_uploader(
+        "Upload a PDF",
+        type="pdf",
+        help="Upload any PDF to start chatting with it"
+    )
 
     if uploaded_file:
-        if st.button("Process PDF", type="primary"):
-            with st.spinner("Reading and indexing your PDF..."):
-                num_chunks = ingest_pdf(uploaded_file)
-            st.success(f"✅ Done! Created {num_chunks} chunks.")
+        st.markdown(f"**{uploaded_file.name}**")
+        st.caption(f"Size: {uploaded_file.size / 1024:.1f} KB")
+
+        if st.button("⚡ Process PDF"):
+            with st.spinner("Analyzing document..."):
+                chunks, pages = ingest_pdf(uploaded_file)
             st.session_state.pdf_ready = True
+            st.session_state.pdf_name = uploaded_file.name
+            st.session_state.pdf_chunks = chunks
+            st.session_state.pdf_pages = pages
+            st.success("Ready to chat!")
 
     if st.session_state.get("pdf_ready"):
-        st.info("PDF is ready! Ask questions in the chat.")
+        st.divider()
+        st.markdown('<p class="sidebar-header">📊 Stats</p>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"""
+            <div class="stat-card">
+                <div class="stat-number">{st.session_state.pdf_pages}</div>
+                <div class="stat-label">Pages</div>
+            </div>""", unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"""
+            <div class="stat-card">
+                <div class="stat-number">{st.session_state.pdf_chunks}</div>
+                <div class="stat-label">Chunks</div>
+            </div>""", unsafe_allow_html=True)
 
-# Chat section
+        st.divider()
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.messages = []
+            st.rerun()
+
+    st.divider()
+    st.markdown('<p class="sidebar-header">⚙️ Powered by</p>', unsafe_allow_html=True)
+    st.caption("🔗 LangChain")
+    st.caption("📦 Pinecone")
+    st.caption("🤖 OpenAI GPT-4o-mini")
+
+# ---- Main Area ----
+st.markdown('<p class="main-title">🧠 DocChat AI</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Upload a PDF and have a conversation with it</p>', unsafe_allow_html=True)
+
 if not st.session_state.get("pdf_ready"):
-    st.info("👈 Upload a PDF in the sidebar to get started.")
+    st.markdown("""
+    <div style="text-align:center; padding: 60px 20px; color: #6b7280;">
+        <div style="font-size: 4rem;">📄</div>
+        <div style="font-size: 1.2rem; font-weight: 600; margin-top: 16px; color: #9ca3af;">No document loaded</div>
+        <div style="margin-top: 8px;">Upload a PDF from the sidebar to get started</div>
+    </div>
+    """, unsafe_allow_html=True)
 else:
     if "messages" not in st.session_state:
         st.session_state.messages = []
+
+    if not st.session_state.messages:
+        st.markdown(f"""
+        <div style="text-align:center; padding: 40px 20px; color: #6b7280;">
+            <div style="font-size: 2rem;">💬</div>
+            <div style="font-size: 1rem; margin-top: 12px; color: #9ca3af;">
+                <b style="color:#667eea">{st.session_state.pdf_name}</b> is ready!<br>Ask anything about it below.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-    if prompt := st.chat_input("Ask anything about your document..."):
+    if prompt := st.chat_input(f"Ask about {st.session_state.get('pdf_name', 'your document')}..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.write(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Searching your document..."):
+            with st.spinner("Thinking..."):
                 answer = get_answer(prompt, st.session_state.messages)
             st.write(answer)
 
