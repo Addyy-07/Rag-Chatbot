@@ -20,75 +20,42 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
 
-    /* Main background */
-    .stApp {
-        background-color: #0f1117;
-    }
+    .stApp { background-color: #0f1117; }
 
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background-color: #1a1d27;
         border-right: 1px solid #2e3047;
     }
 
-    /* Chat messages */
     [data-testid="stChatMessage"] {
         background-color: #1a1d27;
         border-radius: 12px;
-        padding: 8px;
+        border: 1px solid #2e3047;
         margin-bottom: 8px;
-        border: 1px solid #2e3047;
     }
 
-    /* Chat input */
-    [data-testid="stChatInput"] {
-        background-color: #1a1d27;
-        border: 1px solid #2e3047;
-        border-radius: 12px;
-    }
-
-    /* Primary button */
     .stButton > button {
         width: 100%;
-        background: linear-gradient(135deg, #667eea, #764ba2);
+        background-color: #667eea;
         color: white;
         border: none;
         border-radius: 10px;
         padding: 10px;
         font-weight: 600;
         font-size: 15px;
-        cursor: pointer;
     }
     .stButton > button:hover {
-        opacity: 0.9;
-        transform: translateY(-1px);
+        background-color: #5a6fd6;
     }
 
-    /* File uploader */
-    [data-testid="stFileUploader"] {
-        background-color: #12151e;
-        border: 2px dashed #2e3047;
-        border-radius: 12px;
-        padding: 10px;
-    }
-
-    /* Success / info boxes */
-    .stAlert {
-        border-radius: 10px;
-    }
-
-    /* Title styling */
     .main-title {
-        font-size: 2.5rem;
+        font-size: 2.2rem;
         font-weight: 800;
-        background: linear-gradient(135deg, #667eea, #764ba2);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+        color: #667eea;
         margin-bottom: 0;
     }
     .sub-title {
@@ -97,14 +64,21 @@ st.markdown("""
         margin-top: 4px;
         margin-bottom: 24px;
     }
-
-    /* Stat cards */
+    .sidebar-header {
+        color: #667eea;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+    }
     .stat-card {
-        background-color: #1a1d27;
+        background-color: #12151e;
         border: 1px solid #2e3047;
         border-radius: 12px;
         padding: 16px;
         text-align: center;
+        margin-bottom: 8px;
     }
     .stat-number {
         font-size: 1.8rem;
@@ -114,17 +88,36 @@ st.markdown("""
     .stat-label {
         font-size: 0.8rem;
         color: #6b7280;
-        margin-top: 4px;
     }
-
-    /* Sidebar section headers */
-    .sidebar-header {
-        color: #667eea;
-        font-size: 0.75rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 1px;
+    .empty-state {
+        text-align: center;
+        padding: 80px 20px;
+        color: #6b7280;
+    }
+    .empty-state .icon {
+        font-size: 5rem;
+        margin-bottom: 16px;
+    }
+    .empty-state .title {
+        font-size: 1.3rem;
+        font-weight: 600;
+        color: #9ca3af;
         margin-bottom: 8px;
+    }
+    .empty-state .desc {
+        font-size: 0.95rem;
+        color: #4b5563;
+    }
+    .ready-badge {
+        display: inline-block;
+        background-color: #1a3a2a;
+        color: #34d399;
+        border: 1px solid #34d399;
+        border-radius: 20px;
+        padding: 4px 12px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-bottom: 16px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -243,22 +236,24 @@ st.markdown('<p class="sub-title">Upload a PDF and have a conversation with it</
 
 if not st.session_state.get("pdf_ready"):
     st.markdown("""
-    <div style="text-align:center; padding: 60px 20px; color: #6b7280;">
-        <div style="font-size: 4rem;">📄</div>
-        <div style="font-size: 1.2rem; font-weight: 600; margin-top: 16px; color: #9ca3af;">No document loaded</div>
-        <div style="margin-top: 8px;">Upload a PDF from the sidebar to get started</div>
+    <div class="empty-state">
+        <div class="icon">🧠</div>
+        <div class="title">No document loaded yet</div>
+        <div class="desc">Upload a PDF from the sidebar on the left<br>and start having a conversation with it</div>
     </div>
     """, unsafe_allow_html=True)
+
 else:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
     if not st.session_state.messages:
         st.markdown(f"""
-        <div style="text-align:center; padding: 40px 20px; color: #6b7280;">
-            <div style="font-size: 2rem;">💬</div>
-            <div style="font-size: 1rem; margin-top: 12px; color: #9ca3af;">
-                <b style="color:#667eea">{st.session_state.pdf_name}</b> is ready!<br>Ask anything about it below.
+        <div style="text-align:center; padding:40px 20px;">
+            <div class="ready-badge">✅ Document Ready</div>
+            <div style="color:#9ca3af; margin-top:12px;">
+                <b style="color:#667eea">{st.session_state.pdf_name}</b> has been processed.<br>
+                <span style="color:#4b5563; font-size:0.9rem;">Ask anything about it below 👇</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
