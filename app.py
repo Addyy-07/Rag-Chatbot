@@ -149,23 +149,26 @@ def get_answer(question, chat_history):
         index_name=index_name,
         embedding=embeddings
     )
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})  # reduced from 4 to 3
     docs = retriever.invoke(question)
-    context = "\n\n".join(doc.page_content for doc in docs)
 
+    # Truncate each chunk to 500 chars max
+    context = "\n\n".join(doc.page_content[:500] for doc in docs)
+
+    # Only keep last 2 messages for history
     history_text = ""
-    for msg in chat_history[-4:]:
+    for msg in chat_history[-2:]:
         role = "Human" if msg["role"] == "user" else "Assistant"
-        history_text += f"{role}: {msg['content']}\n"
+        history_text += f"{role}: {msg['content'][:200]}\n"
 
     prompt = ChatPromptTemplate.from_template("""
-You are a helpful AI assistant that answers questions based on the provided document context.
-Be concise, clear, and friendly. If the answer isn't in the context, say so honestly.
+You are a helpful AI assistant. Answer based on the context below.
+If the answer isn't in the context, say so honestly. Be concise.
 
 Previous conversation:
 {history}
 
-Context from document:
+Context:
 {context}
 
 Question: {question}
@@ -175,7 +178,8 @@ Answer:""")
     llm = ChatGroq(
         model="llama3-8b-8192",
         api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0
+        temperature=0,
+        max_tokens=512
     )
     chain = prompt | llm | StrOutputParser()
     return chain.invoke({
