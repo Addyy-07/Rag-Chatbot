@@ -1,8 +1,11 @@
 langchain
-langchain-openai
 langchain-community
 langchain-pinecone
+langchain-groq
+langchain-huggingface
+langchain-text-splitters
 pinecone
 pypdf
 python-dotenv
 streamlit
+sentence-transformers

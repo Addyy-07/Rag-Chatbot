@@ -2,12 +2,14 @@ import os
 import tempfile
 from dotenv import load_dotenv
 import streamlit as st
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_pinecone import PineconeVectorStore
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
+from pinecone import Pinecone, ServerlessSpec
 
 load_dotenv()
 
@@ -40,13 +42,6 @@ st.markdown("""
         font-size: 0.95rem;
         text-align: center;
         margin-bottom: 28px;
-    }
-    .upload-box {
-        background-color: #1a1d27;
-        border: 2px dashed #2e3047;
-        border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 20px;
     }
     .stat-card {
         background-color: #1a1d27;
@@ -108,7 +103,22 @@ st.markdown("""
 
 @st.cache_resource
 def get_embeddings():
-    return OpenAIEmbeddings(model="text-embedding-ada-002")
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+@st.cache_resource
+def ensure_index():
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    index_name = os.getenv("PINECONE_INDEX_NAME")
+    if index_name not in [i.name for i in pc.list_indexes()]:
+        pc.create_index(
+            name=index_name,
+            dimension=384,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
+        )
+    return index_name
 
 def ingest_pdf(uploaded_file):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -117,21 +127,26 @@ def ingest_pdf(uploaded_file):
 
     loader = PyPDFLoader(tmp_path)
     documents = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
     chunks = splitter.split_documents(documents)
 
+    index_name = ensure_index()
     embeddings = get_embeddings()
     PineconeVectorStore.from_documents(
         chunks, embeddings,
-        index_name=os.getenv("PINECONE_INDEX_NAME")
+        index_name=index_name
     )
     os.unlink(tmp_path)
     return len(chunks), len(documents)
 
 def get_answer(question, chat_history):
+    index_name = ensure_index()
     embeddings = get_embeddings()
     vectorstore = PineconeVectorStore(
-        index_name=os.getenv("PINECONE_INDEX_NAME"),
+        index_name=index_name,
         embedding=embeddings
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
@@ -157,7 +172,11 @@ Question: {question}
 
 Answer:""")
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatGroq(
+        model="llama3-8b-8192",
+        api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0
+    )
     chain = prompt | llm | StrOutputParser()
     return chain.invoke({
         "history": history_text,
@@ -166,23 +185,24 @@ Answer:""")
     })
 
 # ---- Main UI ----
-
 st.markdown('<p class="main-title">🧠 DocChat AI</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Upload a PDF and have a conversation with it</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Upload a PDF and have a conversation with it</p>',
+            unsafe_allow_html=True)
 
 # ---- Upload Section ----
 if not st.session_state.get("pdf_ready"):
 
-    st.markdown('<div class="upload-box">', unsafe_allow_html=True)
     uploaded_file = st.file_uploader(
         "📂 Choose a PDF file",
         type="pdf",
         help="Upload any PDF to start chatting"
     )
-    st.markdown('</div>', unsafe_allow_html=True)
 
     if uploaded_file:
-        st.markdown(f"**📄 {uploaded_file.name}** &nbsp;·&nbsp; {uploaded_file.size / 1024:.1f} KB")
+        st.markdown(
+            f"**📄 {uploaded_file.name}** &nbsp;·&nbsp; "
+            f"{uploaded_file.size / 1024:.1f} KB"
+        )
         if st.button("⚡ Process & Start Chatting"):
             with st.spinner("Reading and indexing your PDF..."):
                 chunks, pages = ingest_pdf(uploaded_file)
@@ -228,7 +248,7 @@ else:
 
     if not st.session_state.messages:
         st.markdown("""
-        <div style="text-align:center; padding:40px 20px; color:#4b5563;">
+        <div style="text-align:center; padding:40px 20px;">
             <div style="font-size:2.5rem">💬</div>
             <div style="margin-top:10px; color:#6b7280;">
                 Ask anything about your document below
@@ -248,11 +268,13 @@ else:
             with st.spinner("Thinking..."):
                 answer = get_answer(prompt, st.session_state.messages)
             st.write(answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
 
 # ---- Footer ----
 st.markdown("""
 <div class="powered-by">
-    🔗 LangChain &nbsp;|&nbsp; 📦 Pinecone &nbsp;|&nbsp; 🤖 OpenAI GPT-4o-mini
+    🤗 HuggingFace &nbsp;|&nbsp; 📦 Pinecone &nbsp;|&nbsp; ⚡ Groq Llama 3
 </div>
 """, unsafe_allow_html=True)
