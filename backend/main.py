@@ -36,6 +36,7 @@ from backend.utils.logger import configure_root_logger, get_logger
 from frontend.styles import (
     FOOTER_HTML,
     GLOBAL_CSS,
+    render_citation_cards,
     render_doc_count_badge,
     render_document_card,
     render_empty_chat_state,
@@ -298,6 +299,13 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
+            # Show citations stored with this message
+            if msg["role"] == "assistant" and msg.get("citations"):
+                with st.expander(f"📎 {len(msg['citations'])} source(s)", expanded=False):
+                    st.markdown(
+                        render_citation_cards(msg["citations"]),
+                        unsafe_allow_html=True,
+                    )
 
     # ── Chat input ─────────────────────────────────────────────────────────────
     if not target_namespaces:
@@ -313,21 +321,35 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
             with st.spinner("Thinking..."):
                 try:
                     embeddings = _get_embeddings()
-                    answer = handle_chat_query(
+                    result = handle_chat_query(
                         question=user_input,
                         history=st.session_state.messages,
                         embeddings=embeddings,
                         namespaces=target_namespaces,
                     )
+                    answer = result.answer
+                    citations = result.citations
                 except ValueError as exc:
                     answer = f"⚠️ {exc}"
+                    citations = []
                 except Exception as exc:
                     log.error("Chat query failed: %s", exc, exc_info=True)
                     answer = f"⚠️ Something went wrong: {exc}"
+                    citations = []
 
             st.write(answer)
 
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+            # Render citations inline — visible immediately after the answer
+            if citations:
+                with st.expander(f"📎 {len(citations)} source(s)", expanded=True):
+                    st.markdown(
+                        render_citation_cards(citations),
+                        unsafe_allow_html=True,
+                    )
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer, "citations": citations}
+        )
 
 
 # ── App entrypoint ─────────────────────────────────────────────────────────────

@@ -271,6 +271,62 @@ GLOBAL_CSS: str = """
         margin: 8px 0;
     }
 
+    /* ── Source citations ─────────────────────────────────────── */
+    .citations-header {
+        font-size: 0.72rem;
+        color: #4b5563;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        font-weight: 600;
+        margin-top: 14px;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .citation-card {
+        background: linear-gradient(135deg, #13151f, #161929);
+        border: 1px solid #1e2130;
+        border-left: 3px solid #667eea;
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        transition: border-color 0.2s ease;
+        animation: fadeIn 0.3s ease;
+    }
+    .citation-card:hover { border-left-color: #764ba2; }
+    .citation-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+    .citation-filename {
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: #c4b5fd;
+    }
+    .citation-page {
+        font-size: 0.7rem;
+        background: #1e1e3f;
+        color: #818cf8;
+        border: 1px solid #4338ca;
+        border-radius: 12px;
+        padding: 1px 8px;
+        font-weight: 600;
+    }
+    .citation-preview {
+        font-size: 0.78rem;
+        color: #6b7280;
+        line-height: 1.5;
+        font-style: italic;
+        padding: 6px 8px;
+        background: #0f1117;
+        border-radius: 6px;
+        border: 1px solid #1e2130;
+        word-break: break-word;
+    }
+
     /* ── Animations ─────────────────────────────────────────────── */
     @keyframes fadeIn {
         from { opacity: 0; transform: translateY(8px); }
@@ -377,6 +433,40 @@ def render_library_empty_state() -> str:
 def render_sidebar_header(text: str) -> str:
     """Return a styled sidebar section header."""
     return f'<div class="sidebar-header">{text}</div>'
+
+
+def render_citation_cards(citations: list) -> str:
+    """
+    Return HTML for the full source citations section.
+
+    Renders a header plus one card per citation. Each card shows:
+      - Document filename (styled in purple)
+      - Page number badge
+      - Truncated chunk preview
+
+    Args:
+        citations: List of SourceCitation objects.
+
+    Returns:
+        HTML string ready for st.markdown(unsafe_allow_html=True).
+        Returns empty string if citations is empty.
+    """
+    if not citations:
+        return ""
+
+    cards_html = '<div class="citations-header">📎 Sources</div>'
+    for cite in citations:
+        preview = cite.preview.replace("<", "&lt;").replace(">", "&gt;")
+        cards_html += (
+            f'<div class="citation-card">'
+            f'  <div class="citation-title">'
+            f'    <span class="citation-filename">📄 {cite.filename}</span>'
+            f'    <span class="citation-page">Page {cite.page_number}</span>'
+            f'  </div>'
+            f'  <div class="citation-preview">{preview}</div>'
+            f'</div>'
+        )
+    return cards_html
 
 
 FOOTER_HTML: str = """

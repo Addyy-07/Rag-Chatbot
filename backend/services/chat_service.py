@@ -8,27 +8,26 @@ Pipeline steps:
   2. Truncate each chunk to avoid exceeding context limits.
   3. Format recent chat history into a conversation string.
   4. Invoke the LangChain chain: prompt → LLM → string output.
+  5. Extract source citations from retrieved chunk metadata.
+  6. Return a ChatResult containing both the answer and deduplicated citations.
 
-Changes in v2 (multi-doc):
-  - ``get_answer()`` now accepts ``namespaces: list[str]`` instead of using
-    a single default retriever.
-  - Delegates retrieval to ``multi_retriever_service.retrieve_from_namespaces()``.
-  - Backward compatible: pass ``namespaces=[""]`` for single default namespace.
+Changes in v3 (source citations):
+  - ``get_answer()`` now returns ``ChatResult`` instead of ``str``.
+  - Citations are built from retrieved Document metadata (filename, page, doc_id).
+  - Deduplication: one citation per (filename, page_number) pair, by relevance order.
+  - Backward compatible: ``result.answer`` gives the plain string.
 
 Usage
 -----
     from backend.services.chat_service import get_answer, ChatMessage
+    from backend.models.chat import ChatResult
 
-    # Single doc (by namespace)
-    answer = get_answer("What is RAG?", history, embeddings, namespaces=["abc-uuid"])
-
-    # Multiple docs
-    answer = get_answer("Compare both reports", history, embeddings,
-                        namespaces=["uuid-1", "uuid-2"])
-
-    # All docs
-    answer = get_answer("Any mention of risk?", history, embeddings,
-                        namespaces=registry.get_all_namespaces())
+    result: ChatResult = get_answer("What is RAG?", history, embeddings,
+                                    namespaces=["abc-uuid"])
+    print(result.answer)
+    for c in result.citations:
+        print(c.display_label)   # "report.pdf — Page 4"
+        print(c.preview)         # truncated chunk text
 """
 
 from typing import TypedDict
@@ -38,6 +37,7 @@ from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from backend.config.settings import settings
+from backend.models.chat import ChatResult, SourceCitation
 from backend.prompts.rag_prompt import RAG_PROMPT
 from backend.services.multi_retriever_service import retrieve_from_namespaces
 from backend.utils.logger import get_logger
@@ -93,19 +93,71 @@ def _build_context(docs: list) -> str:
     )
 
 
+def _extract_citations(docs: list) -> list[SourceCitation]:
+    """
+    Build a deduplicated list of SourceCitation from retrieved document chunks.
+
+    Each doc is expected to carry metadata stamped during ingestion:
+      - ``filename``    : original PDF filename (e.g. "report.pdf")
+      - ``document_id`` : UUID of the parent document (= Pinecone namespace)
+      - ``page``        : 0-indexed page number (from PyPDFLoader)
+
+    Deduplication: only the first (highest-relevance) chunk per
+    (filename, page_number) pair is kept. If metadata is missing, graceful
+    fallbacks are used so citations never hard-fail.
+
+    Args:
+        docs: Ordered list of retrieved LangChain Document objects.
+
+    Returns:
+        Deduplicated list of SourceCitation, ordered by retrieval rank.
+    """
+    seen: set[tuple[str, int]] = set()
+    citations: list[SourceCitation] = []
+
+    for doc in docs:
+        meta = doc.metadata or {}
+        filename = meta.get("filename") or meta.get("source", "Unknown source")
+        # Strip any temp-file path prefix if filename wasn't stamped
+        if "/" in filename or "\\" in filename:
+            filename = filename.split("/")[-1].split("\\")[-1]
+
+        page_0indexed = meta.get("page", 0)
+        page_number = int(page_0indexed) + 1  # Convert to 1-indexed
+
+        key = (filename, page_number)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        citations.append(
+            SourceCitation(
+                filename=filename,
+                page_number=page_number,
+                chunk_text=doc.page_content,
+                document_id=meta.get("document_id", meta.get("source_namespace", "")),
+            )
+        )
+
+    log.debug("Extracted %d unique citation(s).", len(citations))
+    return citations
+
+
 def get_answer(
     question: str,
     history: list[ChatMessage],
     embeddings: HuggingFaceEmbeddings,
     namespaces: list[str] | None = None,
-) -> str:
+) -> ChatResult:
     """
-    Run the full multi-namespace RAG Q&A pipeline and return the LLM's answer.
+    Run the full multi-namespace RAG Q&A pipeline and return a ChatResult.
 
     Steps:
       1. Retrieve relevant chunks from all specified namespaces.
       2. Build merged context and format history.
       3. Invoke the RAG chain (prompt → LLM → string output).
+      4. Extract source citations from retrieved chunk metadata.
+      5. Return ChatResult(answer, citations).
 
     Args:
         question:    The user's current question.
@@ -115,7 +167,7 @@ def get_answer(
                      Pass None or [""] to use the default namespace (legacy mode).
 
     Returns:
-        Plain-text answer string from the LLM.
+        ChatResult with `answer` (str) and `citations` (list[SourceCitation]).
 
     Raises:
         Any exception from Pinecone retrieval or Groq API calls.
@@ -159,5 +211,12 @@ def get_answer(
         }
     )
 
-    log.info("RAG pipeline complete. Answer: %d chars.", len(answer))
-    return answer
+    # Step 5 — Extract source citations from retrieved chunk metadata
+    citations = _extract_citations(docs)
+
+    log.info(
+        "RAG pipeline complete. Answer: %d chars, %d citation(s).",
+        len(answer),
+        len(citations),
+    )
+    return ChatResult(answer=answer, citations=citations)

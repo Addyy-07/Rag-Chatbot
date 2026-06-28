@@ -106,6 +106,14 @@ def ingest_pdf(
     chunks = splitter.split_documents(documents)
     log.info("Created %d chunk(s).", len(chunks))
 
+    # Step 2b — Stamp source metadata onto every chunk for citation extraction.
+    # PyPDFLoader already adds metadata["source"] (temp path) and metadata["page"]
+    # (0-indexed). We overwrite "source" with the clean filename and add document_id
+    # so retrieved chunks carry full citation info without a registry lookup.
+    for chunk in chunks:
+        chunk.metadata["filename"] = filename
+        chunk.metadata["document_id"] = doc_id
+
     # Step 3 — Upsert to namespace-scoped vector store
     upsert_documents(chunks, embeddings, namespace=namespace)
 

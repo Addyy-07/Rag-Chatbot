@@ -16,9 +16,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from backend.models.chat import ChatResult, SourceCitation
 from backend.services.chat_service import (
     ChatMessage,
     _build_context,
+    _extract_citations,
     _format_history,
     get_answer,
 )
@@ -42,11 +44,13 @@ def sample_history() -> list[ChatMessage]:
 
 @pytest.fixture
 def sample_docs():
-    """Return mock Document objects with controllable page_content."""
+    """Return mock Document objects with controllable page_content and metadata."""
     doc1 = MagicMock()
     doc1.page_content = "A" * 600   # Longer than retriever_context_max_chars (500)
+    doc1.metadata = {"filename": "report.pdf", "page": 3, "document_id": "uuid-1"}
     doc2 = MagicMock()
     doc2.page_content = "B" * 300   # Shorter than limit
+    doc2.metadata = {"filename": "report.pdf", "page": 7, "document_id": "uuid-1"}
     return [doc1, doc2]
 
 
@@ -118,9 +122,10 @@ class TestGetAnswer:
         sample_history,
         mock_embeddings,
     ):
-        """get_answer() must return the plain string produced by the chain."""
+        """get_answer() must return a ChatResult with a string answer."""
         mock_doc = MagicMock()
         mock_doc.page_content = "The capital of France is Paris."
+        mock_doc.metadata = {"filename": "france.pdf", "page": 0, "document_id": "ns-abc"}
         mock_retrieve.return_value = [mock_doc]
 
         mock_chain = MagicMock()
@@ -130,12 +135,13 @@ class TestGetAnswer:
             mock_prompt.__or__ = MagicMock(return_value=mock_chain)
             mock_chain.__or__ = MagicMock(return_value=mock_chain)
 
-            answer = get_answer(
+            result = get_answer(
                 "What is the capital?", sample_history, mock_embeddings,
                 namespaces=["ns-abc"]
             )
 
-        assert isinstance(answer, str)
+        assert isinstance(result, ChatResult)
+        assert isinstance(result.answer, str)
 
     @patch("backend.services.chat_service.retrieve_from_namespaces")
     def test_retriever_called_with_question(
@@ -147,6 +153,7 @@ class TestGetAnswer:
         """retrieve_from_namespaces() must be invoked with the user's question and namespaces."""
         mock_doc = MagicMock()
         mock_doc.page_content = "Some content."
+        mock_doc.metadata = {"filename": "doc.pdf", "page": 0, "document_id": "ns-test"}
         mock_retrieve.return_value = [mock_doc]
 
         with patch("backend.services.chat_service.ChatGroq"), \
@@ -164,3 +171,48 @@ class TestGetAnswer:
         mock_retrieve.assert_called_once_with(
             "Capital of France?", ["ns-test"], mock_embeddings
         )
+
+
+# ── _extract_citations tests ───────────────────────────────────────────────────
+
+class TestExtractCitations:
+
+    def _make_doc(self, filename, page, content="chunk text", doc_id="uuid-1"):
+        doc = MagicMock()
+        doc.page_content = content
+        doc.metadata = {"filename": filename, "page": page, "document_id": doc_id}
+        return doc
+
+    def test_returns_citation_for_each_unique_page(self):
+        docs = [
+            self._make_doc("report.pdf", 0),
+            self._make_doc("report.pdf", 3),
+        ]
+        citations = _extract_citations(docs)
+        assert len(citations) == 2
+        assert all(isinstance(c, SourceCitation) for c in citations)
+
+    def test_deduplicates_same_filename_and_page(self):
+        """Two chunks from the same page should produce only one citation."""
+        docs = [
+            self._make_doc("report.pdf", 5, content="chunk A"),
+            self._make_doc("report.pdf", 5, content="chunk B"),
+        ]
+        citations = _extract_citations(docs)
+        assert len(citations) == 1
+        assert citations[0].chunk_text == "chunk A"   # First (highest-relevance) wins
+
+    def test_page_number_is_one_indexed(self):
+        """page=0 in metadata should appear as page_number=1 in citation."""
+        docs = [self._make_doc("os.pdf", 0)]
+        citations = _extract_citations(docs)
+        assert citations[0].page_number == 1
+
+    def test_graceful_fallback_for_missing_metadata(self):
+        """Docs without stamped metadata should produce a citation with fallbacks."""
+        doc = MagicMock()
+        doc.page_content = "raw chunk"
+        doc.metadata = {}   # No filename, no page, no document_id
+        citations = _extract_citations([doc])
+        assert len(citations) == 1
+        assert citations[0].page_number == 1   # default 0 + 1

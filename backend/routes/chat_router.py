@@ -33,6 +33,7 @@ Usage (from main.py)
 
 from langchain_huggingface import HuggingFaceEmbeddings
 
+from backend.models.chat import ChatResult
 from backend.services.chat_service import ChatMessage, get_answer
 from backend.utils.logger import get_logger
 
@@ -44,7 +45,7 @@ def handle_chat_query(
     history: list[ChatMessage],
     embeddings: HuggingFaceEmbeddings,
     namespaces: list[str] | None = None,
-) -> str:
+) -> ChatResult:
     """
     Orchestrate a single RAG Q&A turn across one or more document namespaces.
 
@@ -56,7 +57,7 @@ def handle_chat_query(
                      None = legacy single-namespace mode.
 
     Returns:
-        Plain-text answer from the LLM.
+        ChatResult with answer string and source citations.
 
     Raises:
         ValueError: If the question is empty or no namespaces are provided.
@@ -78,6 +79,11 @@ def handle_chat_query(
         len(question),
         target_namespaces,
     )
-    answer = get_answer(question, history, embeddings, namespaces=target_namespaces)
-    log.info("Chat router: answer returned (%d chars).", len(answer))
-    return answer
+    result = get_answer(question, history, embeddings, namespaces=target_namespaces)
+    log.info(
+        "Chat router: answer=%d chars, citations=%d.",
+        len(result.answer),
+        len(result.citations),
+    )
+    return result
+
