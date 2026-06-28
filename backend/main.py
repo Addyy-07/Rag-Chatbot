@@ -432,14 +432,15 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
                 
         if active_chat_id:
             chat_api_client.add_message(active_chat_id, "user", user_input, [], token)
-            # handle citations dict structure safely
+            # handle citations namedtuple structure safely
             citations_safe = []
             if citations:
                 for c in citations:
+                    # c is a Citation namedtuple: c.source_file, c.page_number, c.chunk_text
                     citations_safe.append({
-                        "source_file": c.get("source_file", ""),
-                        "page_number": c.get("page_number", None),
-                        "chunk_text": c.get("chunk_text", "")
+                        "source_file": getattr(c, "source_file", ""),
+                        "page_number": getattr(c, "page_number", None),
+                        "chunk_text": getattr(c, "chunk_text", "")
                     })
             chat_api_client.add_message(active_chat_id, "assistant", answer, citations_safe, token)
 

@@ -24,8 +24,8 @@ Usage (from main.py)
 
 import uuid
 from typing import Optional
-
 import streamlit as st
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from backend.models.document import DocumentRecord
