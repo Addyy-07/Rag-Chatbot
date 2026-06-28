@@ -10,8 +10,8 @@ langchain-huggingface==0.2.0
 sentence-transformers==4.1.0
 
 # ── Vector database ────────────────────────────────────────────────────────────
-langchain-pinecone==0.2.0
-pinecone==6.0.2
+langchain-pinecone
+pinecone>=5.4.0,<6.0.0
 
 # ── Document loaders ──────────────────────────────────────────────────────────
 pypdf==5.6.0
@@ -22,6 +22,7 @@ pydantic-settings==2.9.1
 
 # ── UI framework ──────────────────────────────────────────────────────────────
 streamlit==1.45.1
+pandas>=2.2.3
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest==8.4.1
@@ -38,7 +39,9 @@ pymongo==4.7.0
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 passlib[bcrypt]==1.7.4
+bcrypt<4.0.0
 python-jose[cryptography]==3.3.0
+email-validator>=2.0.0
 
 # ── HTTP Client ───────────────────────────────────────────────────────────────
 httpx==0.27.0
