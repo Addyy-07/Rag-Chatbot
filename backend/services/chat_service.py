@@ -4,28 +4,31 @@ backend/services/chat_service.py
 Single Responsibility: execute the RAG question-answering pipeline.
 
 Pipeline steps:
-  1. Retrieve the top-k most relevant document chunks from Pinecone.
+  1. Retrieve relevant document chunks from one or more Pinecone namespaces.
   2. Truncate each chunk to avoid exceeding context limits.
   3. Format recent chat history into a conversation string.
   4. Invoke the LangChain chain: prompt → LLM → string output.
 
-Design decisions:
-  - Chat history and context truncation limits come from Settings.
-  - The prompt template is imported from the prompts module — not defined here.
-  - The LLM (ChatGroq) is instantiated inside the function so it is
-    always fresh (stateless), which is safe and idiomatic for serverless/Streamlit.
-  - Returns a plain str — no LangChain types leak into the router or UI.
-  - `ChatMessage` is a simple TypedDict so routers can type-annotate history.
+Changes in v2 (multi-doc):
+  - ``get_answer()`` now accepts ``namespaces: list[str]`` instead of using
+    a single default retriever.
+  - Delegates retrieval to ``multi_retriever_service.retrieve_from_namespaces()``.
+  - Backward compatible: pass ``namespaces=[""]`` for single default namespace.
 
 Usage
 -----
     from backend.services.chat_service import get_answer, ChatMessage
 
-    history: list[ChatMessage] = [
-        {"role": "user", "content": "What is RAG?"},
-        {"role": "assistant", "content": "RAG stands for..."},
-    ]
-    answer = get_answer("Can you give an example?", history, embeddings)
+    # Single doc (by namespace)
+    answer = get_answer("What is RAG?", history, embeddings, namespaces=["abc-uuid"])
+
+    # Multiple docs
+    answer = get_answer("Compare both reports", history, embeddings,
+                        namespaces=["uuid-1", "uuid-2"])
+
+    # All docs
+    answer = get_answer("Any mention of risk?", history, embeddings,
+                        namespaces=registry.get_all_namespaces())
 """
 
 from typing import TypedDict
@@ -36,7 +39,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 from backend.config.settings import settings
 from backend.prompts.rag_prompt import RAG_PROMPT
-from backend.services.vector_store_service import get_retriever
+from backend.services.multi_retriever_service import retrieve_from_namespaces
 from backend.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -61,9 +64,9 @@ def _format_history(history: list[ChatMessage]) -> str:
         history: Full list of chat messages (oldest first).
 
     Returns:
-        Formatted string like "Human: ...\nAssistant: ..."
+        Formatted string like "Human: ...\\nAssistant: ..."
     """
-    recent = history[-settings.chat_history_window :]
+    recent = history[-settings.chat_history_window:]
     lines = []
     for msg in recent:
         role_label = "Human" if msg["role"] == "user" else "Assistant"
@@ -80,7 +83,7 @@ def _build_context(docs: list) -> str:
     prevent the LLM context window from being exhausted by a single chunk.
 
     Args:
-        docs: List of LangChain Document objects from the retriever.
+        docs: List of LangChain Document objects from the retriever(s).
 
     Returns:
         Newline-separated string of truncated chunk contents.
@@ -94,20 +97,22 @@ def get_answer(
     question: str,
     history: list[ChatMessage],
     embeddings: HuggingFaceEmbeddings,
+    namespaces: list[str] | None = None,
 ) -> str:
     """
-    Run the full RAG Q&A pipeline and return the LLM's answer.
+    Run the full multi-namespace RAG Q&A pipeline and return the LLM's answer.
 
     Steps:
-      1. Build a retriever from the vector store.
-      2. Retrieve relevant document chunks for the question.
-      3. Format history and context.
-      4. Invoke the RAG chain (prompt → LLM → string output).
+      1. Retrieve relevant chunks from all specified namespaces.
+      2. Build merged context and format history.
+      3. Invoke the RAG chain (prompt → LLM → string output).
 
     Args:
-        question:   The user's current question.
-        history:    Full list of prior ChatMessage dicts.
-        embeddings: Instantiated embeddings model (shared singleton).
+        question:    The user's current question.
+        history:     Full list of prior ChatMessage dicts.
+        embeddings:  Instantiated embeddings model (shared singleton).
+        namespaces:  List of Pinecone namespace strings to search.
+                     Pass None or [""] to use the default namespace (legacy mode).
 
     Returns:
         Plain-text answer string from the LLM.
@@ -115,16 +120,26 @@ def get_answer(
     Raises:
         Any exception from Pinecone retrieval or Groq API calls.
     """
-    log.info("RAG pipeline started. Question: '%s...'", question[:60])
+    # Normalise: None → default namespace for backward compat
+    target_namespaces: list[str] = namespaces if namespaces else [""]
 
-    # Step 1 — Retrieve relevant chunks
-    retriever = get_retriever(embeddings)
-    docs = retriever.invoke(question)
-    log.debug("Retrieved %d document chunk(s).", len(docs))
+    log.info(
+        "RAG pipeline: question='%s...', namespaces=%s",
+        question[:60],
+        target_namespaces,
+    )
 
-    # Step 2 — Build context and history strings
+    # Step 1 — Retrieve relevant chunks across namespaces
+    docs = retrieve_from_namespaces(question, target_namespaces, embeddings)
+    log.debug("Total retrieved: %d chunk(s).", len(docs))
+
+    # Step 2 — Build context and history
     context = _build_context(docs)
     history_text = _format_history(history)
+
+    if not context.strip():
+        log.warning("No relevant context found in any namespace.")
+        context = "No relevant document content was found for this question."
 
     # Step 3 — Instantiate LLM (stateless, fresh per call)
     llm = ChatGroq(
@@ -144,5 +159,5 @@ def get_answer(
         }
     )
 
-    log.info("RAG pipeline complete. Answer length: %d chars.", len(answer))
+    log.info("RAG pipeline complete. Answer: %d chars.", len(answer))
     return answer

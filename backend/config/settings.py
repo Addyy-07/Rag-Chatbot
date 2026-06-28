@@ -56,7 +56,11 @@ class Settings(BaseSettings):
     chat_history_window: int = 2        # Number of past exchanges to include
     chat_history_max_chars: int = 200   # Truncation limit per message
 
-    # ── App metadata ────────────────────────────────────────────────────────
+    # ── Document Registry ────────────────────────────────────────────────────────
+    registry_path: str = ".document_registry.json"   # Flat-file metadata store
+    max_upload_files: int = 10                         # Max simultaneous uploads
+
+    # ── App metadata ────────────────────────────────────────────────────────────
     app_title: str = "DocChat AI"
     app_icon: str = "🧠"
     app_version: str = "1.0.0"

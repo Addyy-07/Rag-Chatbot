@@ -109,47 +109,45 @@ class TestGetAnswer:
 
     @patch("backend.services.chat_service.StrOutputParser")
     @patch("backend.services.chat_service.ChatGroq")
-    @patch("backend.services.chat_service.get_retriever")
+    @patch("backend.services.chat_service.retrieve_from_namespaces")
     def test_returns_string_answer(
         self,
-        mock_get_retriever,
+        mock_retrieve,
         mock_groq_cls,
         mock_parser_cls,
         sample_history,
         mock_embeddings,
     ):
         """get_answer() must return the plain string produced by the chain."""
-        # Set up mock retriever returning one doc
         mock_doc = MagicMock()
         mock_doc.page_content = "The capital of France is Paris."
-        mock_get_retriever.return_value.invoke.return_value = [mock_doc]
+        mock_retrieve.return_value = [mock_doc]
 
-        # Mock the chain pipeline to return a fixed answer
         mock_chain = MagicMock()
         mock_chain.invoke.return_value = "Paris is the capital of France."
 
-        # Patch the | operator chain: RAG_PROMPT | llm | parser → mock_chain
         with patch("backend.services.chat_service.RAG_PROMPT") as mock_prompt:
             mock_prompt.__or__ = MagicMock(return_value=mock_chain)
             mock_chain.__or__ = MagicMock(return_value=mock_chain)
 
-            answer = get_answer("What is the capital?", sample_history, mock_embeddings)
+            answer = get_answer(
+                "What is the capital?", sample_history, mock_embeddings,
+                namespaces=["ns-abc"]
+            )
 
         assert isinstance(answer, str)
 
-    @patch("backend.services.chat_service.get_retriever")
+    @patch("backend.services.chat_service.retrieve_from_namespaces")
     def test_retriever_called_with_question(
         self,
-        mock_get_retriever,
+        mock_retrieve,
         sample_history,
         mock_embeddings,
     ):
-        """The retriever must be invoked with the user's question."""
+        """retrieve_from_namespaces() must be invoked with the user's question and namespaces."""
         mock_doc = MagicMock()
         mock_doc.page_content = "Some content."
-        mock_retriever = MagicMock()
-        mock_retriever.invoke.return_value = [mock_doc]
-        mock_get_retriever.return_value = mock_retriever
+        mock_retrieve.return_value = [mock_doc]
 
         with patch("backend.services.chat_service.ChatGroq"), \
              patch("backend.services.chat_service.RAG_PROMPT") as mock_prompt:
@@ -158,6 +156,11 @@ class TestGetAnswer:
             mock_prompt.__or__ = MagicMock(return_value=mock_chain)
             mock_chain.__or__ = MagicMock(return_value=mock_chain)
 
-            get_answer("Capital of France?", sample_history, mock_embeddings)
+            get_answer(
+                "Capital of France?", sample_history, mock_embeddings,
+                namespaces=["ns-test"]
+            )
 
-        mock_retriever.invoke.assert_called_once_with("Capital of France?")
+        mock_retrieve.assert_called_once_with(
+            "Capital of France?", ["ns-test"], mock_embeddings
+        )

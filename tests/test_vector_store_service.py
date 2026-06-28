@@ -77,7 +77,7 @@ class TestUpsertDocuments:
     def test_from_documents_called_with_chunks(
         self, mock_vs_cls, mock_pinecone, mock_embeddings
     ):
-        """upsert_documents() must call PineconeVectorStore.from_documents."""
+        """upsert_documents() must call PineconeVectorStore.from_documents with namespace."""
         existing_idx = MagicMock()
         existing_idx.name = "rag-chatbot-free"
         mock_pinecone.list_indexes.return_value = [existing_idx]
@@ -89,6 +89,7 @@ class TestUpsertDocuments:
             fake_chunks,
             mock_embeddings,
             index_name="rag-chatbot-free",
+            namespace="",          # default empty namespace
         )
 
     @patch("backend.services.vector_store_service.PineconeVectorStore")

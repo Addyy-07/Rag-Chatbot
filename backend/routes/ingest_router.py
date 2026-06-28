@@ -4,27 +4,33 @@ backend/routes/ingest_router.py
 Orchestration layer for the PDF ingestion flow.
 
 Responsibility:
-  - Bridge between the Streamlit UI event (file upload) and the service layer.
+  - Bridge between the Streamlit UI (file upload events) and the service layer.
   - Handle the Streamlit-specific UploadedFile → bytes → temp path conversion.
-  - Coordinate EmbeddingService + IngestionService without owning any logic.
+  - Generate a UUID per document and coordinate with DocumentRegistry.
+  - Support single or multi-file uploads.
 
-Why a separate router?
-  - The router is the ONLY layer that knows about both Streamlit types and
-    service types. Services remain UI-agnostic.
-  - When we add a FastAPI backend, we replace/add routers — services don't change.
-  - Thin: no business logic lives here.
+Changes in v2 (multi-doc):
+  - ``handle_pdf_upload()`` now accepts a list of UploadedFile objects.
+  - Returns a list of DocumentRecord objects (one per file).
+  - Each file is processed independently with its own UUID and namespace.
+  - Partial success: if one file fails, the rest are still processed.
 
 Usage (from main.py)
 -----
     from backend.routes.ingest_router import handle_pdf_upload
 
-    result = handle_pdf_upload(uploaded_file, embeddings)
+    records = handle_pdf_upload(uploaded_files, embeddings, registry)
 """
+
+import uuid
+from typing import Optional
 
 import streamlit as st
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from backend.services.ingestion_service import IngestionResult, ingest_pdf
+from backend.models.document import DocumentRecord
+from backend.services.document_registry import DocumentRegistry
+from backend.services.ingestion_service import ingest_pdf
 from backend.utils.file_utils import temp_pdf_path
 from backend.utils.logger import get_logger
 
@@ -32,37 +38,74 @@ log = get_logger(__name__)
 
 
 def handle_pdf_upload(
-    uploaded_file: st.runtime.uploaded_file_manager.UploadedFile,
+    uploaded_files: list[st.runtime.uploaded_file_manager.UploadedFile],
     embeddings: HuggingFaceEmbeddings,
-) -> IngestionResult:
+    registry: DocumentRegistry,
+) -> list[DocumentRecord]:
     """
-    Orchestrate the full ingestion flow for a Streamlit UploadedFile.
+    Orchestrate the full ingestion flow for one or more Streamlit UploadedFiles.
 
-    Steps:
-      1. Read raw bytes from the uploaded file object.
-      2. Write bytes to a secure temporary file (auto-cleaned on exit).
-      3. Delegate the actual ingestion to ``ingest_pdf()``.
+    For each file:
+      1. Generate a unique document_id (UUID4).
+      2. Read raw bytes and write to a secure temp file.
+      3. Run the ingestion pipeline (load → split → embed → upsert).
+      4. Register the returned DocumentRecord in the registry.
+
+    Partial success: if one file fails, processing continues with remaining
+    files. Failures are logged; the caller receives only successful records.
 
     Args:
-        uploaded_file: The Streamlit UploadedFile object from st.file_uploader.
-        embeddings:    Cached HuggingFaceEmbeddings singleton from the UI layer.
+        uploaded_files: List of Streamlit UploadedFile objects.
+        embeddings:     Cached HuggingFaceEmbeddings singleton.
+        registry:       DocumentRegistry instance for persistence.
 
     Returns:
-        IngestionResult with page_count and chunk_count.
-
-    Raises:
-        Any exception from ingestion_service or vector_store_service.
+        List of successfully ingested DocumentRecord objects.
+        May be shorter than ``uploaded_files`` if some files failed.
     """
-    log.info("Ingest router: handling upload of '%s'.", uploaded_file.name)
-    file_bytes = uploaded_file.read()
+    if not uploaded_files:
+        log.warning("handle_pdf_upload called with empty file list.")
+        return []
 
-    with temp_pdf_path(file_bytes) as pdf_path:
-        result = ingest_pdf(pdf_path, embeddings)
+    log.info("Ingest router: processing %d file(s).", len(uploaded_files))
+    successful: list[DocumentRecord] = []
+
+    for uploaded_file in uploaded_files:
+        doc_id = str(uuid.uuid4())
+        log.info(
+            "Processing '%s' → doc_id=%s", uploaded_file.name, doc_id
+        )
+        try:
+            file_bytes = uploaded_file.read()
+            with temp_pdf_path(file_bytes) as pdf_path:
+                record = ingest_pdf(
+                    pdf_path=pdf_path,
+                    embeddings=embeddings,
+                    document_id=doc_id,
+                    filename=uploaded_file.name,
+                    size_bytes=len(file_bytes),
+                )
+            registry.add(record)
+            successful.append(record)
+            log.info(
+                "Ingest router: '%s' done — %d pages, %d chunks, namespace='%s'.",
+                record.filename,
+                record.page_count,
+                record.chunk_count,
+                record.namespace,
+            )
+        except Exception as exc:
+            log.error(
+                "Ingest router: failed to process '%s': %s",
+                uploaded_file.name,
+                exc,
+                exc_info=True,
+            )
+            # Continue processing remaining files
 
     log.info(
-        "Ingest router: '%s' ingested — %d pages, %d chunks.",
-        uploaded_file.name,
-        result.page_count,
-        result.chunk_count,
+        "Ingest router: %d/%d file(s) ingested successfully.",
+        len(successful),
+        len(uploaded_files),
     )
-    return result
+    return successful

@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
-from backend.services.ingestion_service import IngestionResult, ingest_pdf
+from backend.models.document import DocumentRecord
+from backend.services.ingestion_service import ingest_pdf
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -60,15 +62,17 @@ class TestIngestPdf:
         fake_chunks,
         mock_embeddings,
     ):
-        """ingest_pdf() should return an IngestionResult with correct counts."""
+        """ingest_pdf() should return a DocumentRecord with correct counts."""
         mock_loader_cls.return_value.load.return_value = fake_documents
         mock_splitter_cls.return_value.split_documents.return_value = fake_chunks
 
-        result = ingest_pdf("/fake/path.pdf", mock_embeddings)
+        result = ingest_pdf("/fake/path.pdf", mock_embeddings,
+                            filename="report.pdf", size_bytes=1024)
 
-        assert isinstance(result, IngestionResult)
+        assert isinstance(result, DocumentRecord)
         assert result.page_count == 2
         assert result.chunk_count == 3
+        assert result.filename == "report.pdf"
 
     @patch("backend.services.ingestion_service.upsert_documents")
     @patch("backend.services.ingestion_service.RecursiveCharacterTextSplitter")
@@ -86,9 +90,11 @@ class TestIngestPdf:
         mock_loader_cls.return_value.load.return_value = fake_documents
         mock_splitter_cls.return_value.split_documents.return_value = fake_chunks
 
-        ingest_pdf("/fake/path.pdf", mock_embeddings)
+        ingest_pdf("/fake/path.pdf", mock_embeddings,
+                   document_id="test-uuid", filename="f.pdf")
 
-        mock_upsert.assert_called_once_with(fake_chunks, mock_embeddings)
+        # Verify upsert was called once with the correct namespace
+        mock_upsert.assert_called_once_with(fake_chunks, mock_embeddings, namespace="test-uuid")
 
     @patch("backend.services.ingestion_service.upsert_documents")
     @patch("backend.services.ingestion_service.RecursiveCharacterTextSplitter")
@@ -121,11 +127,11 @@ class TestIngestPdf:
         fake_chunks,
         mock_embeddings,
     ):
-        """IngestionResult is a frozen dataclass — mutation must raise TypeError."""
+        """DocumentRecord is a frozen Pydantic model — mutation must raise ValidationError."""
         mock_loader_cls.return_value.load.return_value = fake_documents
         mock_splitter_cls.return_value.split_documents.return_value = fake_chunks
 
-        result = ingest_pdf("/fake/path.pdf", mock_embeddings)
+        result = ingest_pdf("/fake/path.pdf", mock_embeddings, filename="f.pdf")
 
-        with pytest.raises((AttributeError, TypeError)):
+        with pytest.raises((ValidationError, TypeError, AttributeError)):
             result.page_count = 999  # type: ignore[misc]

@@ -3,17 +3,22 @@ backend/main.py
 ────────────────
 Streamlit application entrypoint — UI logic ONLY.
 
-This file's only job is to:
-  1. Configure the Streamlit page.
-  2. Cache expensive resources (embeddings) once per process.
-  3. Render the UI and respond to user interactions.
-  4. Delegate ALL business logic to routes (which call services).
+v2 — Multi-Document Support
+  - Sidebar: document library (all ingested PDFs with metadata cards + delete)
+  - Main panel: multi-file uploader
+  - Chat mode selector: Single Doc | Selected Docs | All Docs
+  - Namespace-aware chat pipeline
 
-What this file deliberately does NOT contain:
-  - PDF parsing, text splitting, embedding, or LLM calls.
-  - Direct Pinecone or Groq API calls.
-  - CSS or HTML strings (imported from frontend/styles.py).
-  - os.getenv() calls (config comes from settings).
+Layout:
+  ┌─────────────────┬──────────────────────────────────────┐
+  │   SIDEBAR       │          MAIN PANEL                  │
+  │                 │                                      │
+  │  📚 Library     │  [Upload Section]  OR  [Chat Section]│
+  │  ─ doc card     │                                      │
+  │  ─ doc card     │  Mode: ○ Single  ○ Selected  ○ All  │
+  │  ─ [Delete]     │                                      │
+  │                 │  [Chat interface]                    │
+  └─────────────────┴──────────────────────────────────────┘
 
 Run:
     streamlit run backend/main.py
@@ -24,15 +29,20 @@ import streamlit as st
 from backend.config.settings import settings
 from backend.routes.chat_router import handle_chat_query
 from backend.routes.ingest_router import handle_pdf_upload
+from backend.services.document_registry import DocumentRegistry
 from backend.services.embedding_service import create_embedding_model
 from backend.utils.file_utils import human_readable_size
 from backend.utils.logger import configure_root_logger, get_logger
 from frontend.styles import (
     FOOTER_HTML,
     GLOBAL_CSS,
+    render_doc_count_badge,
+    render_document_card,
     render_empty_chat_state,
+    render_library_empty_state,
+    render_mode_badge,
     render_page_header,
-    render_ready_badge,
+    render_sidebar_header,
     render_stat_card,
 )
 
@@ -44,117 +54,257 @@ log = get_logger(__name__)
 st.set_page_config(
     page_title=settings.app_title,
     page_icon=settings.app_icon,
-    layout="centered",
-    initial_sidebar_state="collapsed",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # ── Inject global CSS ─────────────────────────────────────────────────────────
 st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
 
-# ── Cached resource: embeddings (loaded once per process) ─────────────────────
+# ── Cached resources ──────────────────────────────────────────────────────────
+
 @st.cache_resource(show_spinner="Loading embedding model...")
 def _get_embeddings():
-    """
-    Load and cache the HuggingFace embeddings model.
-
-    @st.cache_resource ensures this runs only once per Streamlit worker process,
-    regardless of how many times the page reruns.
-    """
+    """Load and cache the HuggingFace embeddings model (once per process)."""
     return create_embedding_model()
 
 
-# ── Hero header ────────────────────────────────────────────────────────────────
-st.markdown(
-    render_page_header(
-        f"{settings.app_icon} {settings.app_title}",
-        "Upload a PDF and have a conversation with it",
-    ),
-    unsafe_allow_html=True,
-)
+@st.cache_resource
+def _get_registry() -> DocumentRegistry:
+    """Return a cached DocumentRegistry singleton."""
+    return DocumentRegistry()
+
+
+# ── Sidebar — Document Library ────────────────────────────────────────────────
+
+def _render_sidebar(registry: DocumentRegistry) -> None:
+    """Render the document library in the sidebar."""
+    with st.sidebar:
+        st.markdown(
+            render_page_header(f"{settings.app_icon} DocChat AI", f"v{settings.app_version}"),
+            unsafe_allow_html=True,
+        )
+        st.markdown(render_sidebar_header("📚 DOCUMENT LIBRARY"), unsafe_allow_html=True)
+
+        docs = registry.get_all()
+
+        if not docs:
+            st.markdown(render_library_empty_state(), unsafe_allow_html=True)
+        else:
+            st.markdown(
+                render_doc_count_badge(len(docs)),
+                unsafe_allow_html=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            for doc in docs:
+                st.markdown(render_document_card(doc), unsafe_allow_html=True)
+
+                col_del, col_space = st.columns([1, 2])
+                with col_del:
+                    if st.button(
+                        "🗑️ Delete",
+                        key=f"del_{doc.document_id}",
+                        help=f"Remove '{doc.filename}' from the library",
+                    ):
+                        embeddings = _get_embeddings()
+                        deleted = registry.delete(doc.document_id, embeddings)
+                        if deleted:
+                            # Clear any chat scoped to this doc
+                            if st.session_state.get("selected_doc_ids"):
+                                st.session_state.selected_doc_ids = [
+                                    d for d in st.session_state.selected_doc_ids
+                                    if d != doc.document_id
+                                ]
+                            st.session_state.messages = []
+                            st.success(f"✅ '{doc.display_name}' deleted.")
+                            st.rerun()
+
+                st.markdown("<hr style='border-color:#1e2130;margin:4px 0 10px'>", unsafe_allow_html=True)
 
 
 # ── Upload Section ─────────────────────────────────────────────────────────────
-if not st.session_state.get("pdf_ready"):
 
-    uploaded_file = st.file_uploader(
-        "📂 Choose a PDF file",
-        type="pdf",
-        help="Upload any PDF document to start chatting with it",
+def _render_upload_section(registry: DocumentRegistry) -> None:
+    """Render the multi-file upload panel."""
+    st.markdown(
+        render_page_header(
+            f"{settings.app_icon} {settings.app_title}",
+            "Upload PDFs and have intelligent conversations with your documents",
+        ),
+        unsafe_allow_html=True,
     )
 
-    if uploaded_file:
-        file_size = human_readable_size(uploaded_file.size)
-        st.markdown(
-            f"**📄 {uploaded_file.name}** &nbsp;·&nbsp; {file_size}"
-        )
+    uploaded_files = st.file_uploader(
+        f"📂 Upload up to {settings.max_upload_files} PDF files",
+        type="pdf",
+        accept_multiple_files=True,
+        help="Hold Ctrl/Cmd to select multiple files",
+        key="file_uploader",
+    )
 
-        if st.button("⚡ Process & Start Chatting", key="btn_process"):
+    if uploaded_files:
+        # Cap at max_upload_files
+        if len(uploaded_files) > settings.max_upload_files:
+            st.warning(
+                f"⚠️ Maximum {settings.max_upload_files} files allowed. "
+                f"Only the first {settings.max_upload_files} will be processed."
+            )
+            uploaded_files = uploaded_files[: settings.max_upload_files]
+
+        # Preview list
+        st.markdown("**Selected files:**")
+        for f in uploaded_files:
+            st.markdown(
+                f"&nbsp;&nbsp;📄 **{f.name}** &nbsp;·&nbsp; {human_readable_size(f.size)}"
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if st.button(
+            f"⚡ Process {len(uploaded_files)} PDF{'s' if len(uploaded_files) > 1 else ''}",
+            key="btn_process",
+        ):
             embeddings = _get_embeddings()
-            with st.spinner("Reading and indexing your PDF — this may take a moment..."):
-                try:
-                    result = handle_pdf_upload(uploaded_file, embeddings)
-                    st.session_state.pdf_ready = True
-                    st.session_state.pdf_name = uploaded_file.name
-                    st.session_state.pdf_chunks = result.chunk_count
-                    st.session_state.pdf_pages = result.page_count
+            progress_bar = st.progress(0, text="Starting ingestion...")
+
+            try:
+                results = []
+                for i, uf in enumerate(uploaded_files):
+                    progress_bar.progress(
+                        (i) / len(uploaded_files),
+                        text=f"Processing {uf.name} ({i + 1}/{len(uploaded_files)})...",
+                    )
+                    batch = handle_pdf_upload([uf], embeddings, registry)
+                    results.extend(batch)
+
+                progress_bar.progress(1.0, text="All done!")
+
+                if results:
                     st.session_state.messages = []
+                    names = ", ".join(f"'{r.filename}'" for r in results)
+                    st.success(
+                        f"✅ Successfully ingested {len(results)} document(s): {names}"
+                    )
                     log.info(
-                        "PDF '%s' processed: %d pages, %d chunks.",
-                        uploaded_file.name,
-                        result.page_count,
-                        result.chunk_count,
+                        "Upload complete: %d/%d files ingested.",
+                        len(results), len(uploaded_files),
                     )
                     st.rerun()
-                except Exception as exc:
-                    log.error("Ingestion failed: %s", exc, exc_info=True)
-                    st.error(f"❌ Failed to process PDF: {exc}")
+                else:
+                    st.error("❌ No files were successfully processed. Check logs.")
+
+            except Exception as exc:
+                log.error("Batch ingestion failed: %s", exc, exc_info=True)
+                st.error(f"❌ Ingestion error: {exc}")
 
 
 # ── Chat Section ───────────────────────────────────────────────────────────────
-else:
-    # ── Document info bar ────────────────────────────────────────────────────
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        st.markdown(
-            render_ready_badge(st.session_state.pdf_name),
-            unsafe_allow_html=True,
-        )
-    with col2:
-        st.markdown(
-            render_stat_card(st.session_state.pdf_pages, "Pages"),
-            unsafe_allow_html=True,
-        )
-    with col3:
-        st.markdown(
-            render_stat_card(st.session_state.pdf_chunks, "Chunks"),
-            unsafe_allow_html=True,
-        )
 
-    st.markdown("<br>", unsafe_allow_html=True)
+def _render_chat_section(registry: DocumentRegistry) -> None:
+    """Render the multi-mode chat interface."""
+    docs = registry.get_all()
 
-    if st.button("🔄 Upload New PDF", key="btn_new_pdf"):
-        st.session_state.pdf_ready = False
-        st.session_state.messages = []
-        st.rerun()
+    if not docs:
+        st.info("📭 Your library is empty. Upload PDFs using the sidebar.")
+        return
+
+    st.markdown(
+        render_page_header(
+            f"{settings.app_icon} {settings.app_title}",
+            "Chat with your document library",
+        ),
+        unsafe_allow_html=True,
+    )
+
+    # ── Mode selector ──────────────────────────────────────────────────────────
+    st.markdown("<div class='mode-header'>CHAT MODE</div>", unsafe_allow_html=True)
+    mode = st.radio(
+        "Chat mode",
+        options=["📄 Single Document", "📚 Select Documents", "🌐 All Documents"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="chat_mode",
+    )
+
+    # ── Namespace resolution based on mode ─────────────────────────────────────
+    target_namespaces: list[str] = []
+    mode_key = "single"
+
+    if mode == "📄 Single Document":
+        mode_key = "single"
+        doc_options = {d.filename: d.document_id for d in docs}
+        selected_name = st.selectbox(
+            "Select document",
+            options=list(doc_options.keys()),
+            key="single_doc_select",
+        )
+        if selected_name:
+            target_namespaces = [doc_options[selected_name]]
+
+    elif mode == "📚 Select Documents":
+        mode_key = "selected"
+        doc_options = {d.filename: d.document_id for d in docs}
+        selected_names = st.multiselect(
+            "Select documents to include",
+            options=list(doc_options.keys()),
+            default=list(doc_options.keys())[:2] if len(doc_options) >= 2 else list(doc_options.keys()),
+            key="multi_doc_select",
+        )
+        target_namespaces = [doc_options[n] for n in selected_names if n in doc_options]
+        if not target_namespaces:
+            st.warning("⚠️ Please select at least one document.")
+
+    else:  # All Documents
+        mode_key = "all"
+        target_namespaces = registry.get_all_namespaces()
+        st.caption(f"🌐 Searching across **{len(target_namespaces)}** document(s)")
+
+    # ── Mode badge + context info ──────────────────────────────────────────────
+    if target_namespaces:
+        col_badge, col_info = st.columns([2, 3])
+        with col_badge:
+            st.markdown(render_mode_badge(mode_key), unsafe_allow_html=True)
+        with col_info:
+            ns_count = len(target_namespaces)
+            st.caption(
+                f"Querying **{ns_count}** namespace{'s' if ns_count > 1 else ''}"
+            )
 
     st.divider()
 
-    # ── Chat history initialisation ──────────────────────────────────────────
+    # ── Chat history ───────────────────────────────────────────────────────────
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # ── Empty state ──────────────────────────────────────────────────────────
+    # Clear messages when mode or selection changes
+    mode_state_key = f"{mode_key}_{','.join(sorted(target_namespaces))}"
+    if st.session_state.get("_last_mode_key") != mode_state_key:
+        st.session_state.messages = []
+        st.session_state["_last_mode_key"] = mode_state_key
+
+    col_chat, col_actions = st.columns([5, 1])
+    with col_actions:
+        if st.button("🔄 Clear Chat", key="btn_clear"):
+            st.session_state.messages = []
+            st.rerun()
+
+    # ── Empty state ────────────────────────────────────────────────────────────
     if not st.session_state.messages:
         st.markdown(render_empty_chat_state(), unsafe_allow_html=True)
 
-    # ── Render existing messages ─────────────────────────────────────────────
+    # ── Render conversation ────────────────────────────────────────────────────
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-    # ── Chat input ───────────────────────────────────────────────────────────
-    if user_input := st.chat_input("Ask a question about your document..."):
+    # ── Chat input ─────────────────────────────────────────────────────────────
+    if not target_namespaces:
+        st.chat_input("Select documents above to start chatting...", disabled=True)
+        return
+
+    if user_input := st.chat_input("Ask a question about your document(s)..."):
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.write(user_input)
@@ -164,10 +314,13 @@ else:
                 try:
                     embeddings = _get_embeddings()
                     answer = handle_chat_query(
-                        user_input,
-                        st.session_state.messages,
-                        embeddings,
+                        question=user_input,
+                        history=st.session_state.messages,
+                        embeddings=embeddings,
+                        namespaces=target_namespaces,
                     )
+                except ValueError as exc:
+                    answer = f"⚠️ {exc}"
                 except Exception as exc:
                     log.error("Chat query failed: %s", exc, exc_info=True)
                     answer = f"⚠️ Something went wrong: {exc}"
@@ -176,6 +329,25 @@ else:
 
         st.session_state.messages.append({"role": "assistant", "content": answer})
 
+
+# ── App entrypoint ─────────────────────────────────────────────────────────────
+
+registry = _get_registry()
+
+# Render sidebar (always visible)
+_render_sidebar(registry)
+
+# Render main panel based on library state
+docs = registry.get_all()
+if not docs:
+    _render_upload_section(registry)
+else:
+    # Show tabs: Chat | Upload More
+    tab_chat, tab_upload = st.tabs(["💬 Chat", "📤 Upload More PDFs"])
+    with tab_chat:
+        _render_chat_section(registry)
+    with tab_upload:
+        _render_upload_section(registry)
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown(FOOTER_HTML, unsafe_allow_html=True)

@@ -6,24 +6,29 @@ Single Responsibility: orchestrate the PDF → chunks → vector store pipeline.
 Pipeline steps:
   1. Load the PDF from a file path using PyPDFLoader.
   2. Split documents into overlapping chunks via RecursiveCharacterTextSplitter.
-  3. Upsert chunks into Pinecone via VectorStoreService.
+  3. Upsert chunks into a specific Pinecone namespace.
+  4. Return a DocumentRecord with full metadata.
 
-Design decisions:
-  - Accepts a file path (str), NOT an UploadedFile object — keeps this service
-    completely decoupled from Streamlit. The router converts the uploaded file
-    to a temp path before calling here.
-  - Chunk size and overlap come from Settings (not hardcoded).
-  - Returns a typed dataclass so callers don't need to unpack bare tuples.
-  - Logging replaces all print() statements.
+Changes in v2 (multi-doc):
+  - Accepts ``namespace``, ``filename``, and ``size_bytes`` parameters.
+  - Returns ``DocumentRecord`` instead of ``IngestionResult``.
+  - ``IngestionResult`` is kept as an alias for backward compatibility.
 
 Usage
 -----
-    from backend.services.ingestion_service import ingest_pdf, IngestionResult
+    from backend.services.ingestion_service import ingest_pdf
+    from backend.models.document import DocumentRecord
 
-    result: IngestionResult = ingest_pdf(pdf_path, embeddings)
-    print(f"Ingested {result.chunk_count} chunks from {result.page_count} pages.")
+    record: DocumentRecord = ingest_pdf(
+        pdf_path="/tmp/report.pdf",
+        embeddings=embeddings,
+        document_id="abc-uuid-123",
+        filename="report.pdf",
+        size_bytes=204800,
+    )
 """
 
+import uuid
 from dataclasses import dataclass
 
 from langchain_community.document_loaders import PyPDFLoader
@@ -31,51 +36,62 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.config.settings import settings
+from backend.models.document import DocumentRecord, make_upload_date
 from backend.services.vector_store_service import upsert_documents
 from backend.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 
+# ── Backward-compat alias ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class IngestionResult:
     """
-    Immutable result returned by ``ingest_pdf()``.
-
-    Attributes:
-        page_count:  Number of pages in the original PDF.
-        chunk_count: Number of chunks stored in the vector database.
+    Legacy result type — kept for backward compatibility with existing tests.
+    New code should use DocumentRecord directly.
     """
-
     page_count: int
     chunk_count: int
 
 
-def ingest_pdf(pdf_path: str, embeddings: HuggingFaceEmbeddings) -> IngestionResult:
+def ingest_pdf(
+    pdf_path: str,
+    embeddings: HuggingFaceEmbeddings,
+    document_id: str | None = None,
+    filename: str = "document.pdf",
+    size_bytes: int = 0,
+) -> DocumentRecord:
     """
-    Run the full PDF ingestion pipeline.
+    Run the full PDF ingestion pipeline for a single document.
 
     Steps:
       1. Load all pages from the PDF at ``pdf_path``.
       2. Split pages into overlapping text chunks.
-      3. Embed chunks and upsert to Pinecone.
+      3. Embed chunks and upsert to the document's Pinecone namespace.
+      4. Return a populated DocumentRecord.
 
     Args:
-        pdf_path:   Absolute path to the PDF file on disk.
-        embeddings: An instantiated LangChain-compatible embeddings model.
+        pdf_path:     Absolute path to the PDF file on disk.
+        embeddings:   An instantiated LangChain-compatible embeddings model.
+        document_id:  UUID string for this document. Generated if not provided.
+        filename:     Original filename (used for display and metadata).
+        size_bytes:   File size in bytes (used for display metadata).
 
     Returns:
-        IngestionResult containing page and chunk counts.
+        DocumentRecord with all metadata populated.
 
     Raises:
         FileNotFoundError: If ``pdf_path`` does not exist.
         Any exception propagated from PyPDFLoader or PineconeVectorStore.
     """
+    doc_id = document_id or str(uuid.uuid4())
+    namespace = doc_id  # Namespace == document_id
+
     # Step 1 — Load PDF
-    log.info("Loading PDF: %s", pdf_path)
+    log.info("Loading PDF: %s (doc_id=%s)", pdf_path, doc_id)
     loader = PyPDFLoader(pdf_path)
     documents = loader.load()
-    log.info("Loaded %d page(s) from PDF.", len(documents))
+    log.info("Loaded %d page(s).", len(documents))
 
     # Step 2 — Split into chunks
     log.info(
@@ -90,13 +106,24 @@ def ingest_pdf(pdf_path: str, embeddings: HuggingFaceEmbeddings) -> IngestionRes
     chunks = splitter.split_documents(documents)
     log.info("Created %d chunk(s).", len(chunks))
 
-    # Step 3 — Upsert to vector store
-    upsert_documents(chunks, embeddings)
+    # Step 3 — Upsert to namespace-scoped vector store
+    upsert_documents(chunks, embeddings, namespace=namespace)
 
-    result = IngestionResult(page_count=len(documents), chunk_count=len(chunks))
-    log.info(
-        "Ingestion complete: %d pages, %d chunks.",
-        result.page_count,
-        result.chunk_count,
+    # Step 4 — Build and return DocumentRecord
+    record = DocumentRecord(
+        document_id=doc_id,
+        filename=filename,
+        upload_date=make_upload_date(),
+        page_count=len(documents),
+        chunk_count=len(chunks),
+        namespace=namespace,
+        size_bytes=size_bytes,
     )
-    return result
+    log.info(
+        "Ingestion complete: doc_id=%s, %d pages, %d chunks, namespace='%s'.",
+        doc_id,
+        record.page_count,
+        record.chunk_count,
+        namespace,
+    )
+    return record

@@ -6,17 +6,16 @@ Single Responsibility: manage Pinecone index lifecycle and vector store access.
 Responsibilities:
   1. Ensure the Pinecone index exists (create if absent).
   2. Return a LangChain PineconeVectorStore bound to the index.
-  3. Expose a retriever configured from Settings.
+  3. Expose a namespace-scoped retriever configured from Settings.
+  4. Upsert document chunks into a specified namespace.
 
-Design decisions:
-  - All Pinecone configuration (cloud, region, metric, dimension) comes from
-    Settings — zero hardcoded strings in this file.
-  - `ensure_index()` is idempotent: safe to call on every app start.
-  - `get_vector_store()` is designed to be cached by the caller (@st.cache_resource).
-  - No Streamlit imports — fully portable.
+Namespace support (v2):
+  All public functions now accept an optional ``namespace`` parameter.
+  Callers that omit it get the old behaviour (default namespace "").
+  This preserves full backward compatibility with existing tests.
 
 Open/Closed Principle: to swap Pinecone for Weaviate or Chroma, only this
-file changes; services that call `get_retriever()` are untouched.
+file changes; services that call get_retriever() are untouched.
 
 Usage
 -----
@@ -24,7 +23,14 @@ Usage
         ensure_index,
         get_vector_store,
         get_retriever,
+        upsert_documents,
     )
+
+    # Single namespace (legacy / default)
+    retriever = get_retriever(embeddings)
+
+    # Namespace-scoped (multi-doc)
+    retriever = get_retriever(embeddings, namespace="abc-uuid-123")
 """
 
 from langchain_pinecone import PineconeVectorStore
@@ -69,63 +75,82 @@ def ensure_index() -> str:
         )
         log.info("Pinecone index '%s' created successfully.", index_name)
     else:
-        log.info("Pinecone index '%s' already exists.", index_name)
+        log.debug("Pinecone index '%s' already exists.", index_name)
 
     return index_name
 
 
-def get_vector_store(embeddings: HuggingFaceEmbeddings) -> PineconeVectorStore:
+def get_vector_store(
+    embeddings: HuggingFaceEmbeddings,
+    namespace: str = "",
+) -> PineconeVectorStore:
     """
-    Return a LangChain PineconeVectorStore bound to our index.
-
-    Calls `ensure_index()` first so the index always exists before access.
+    Return a LangChain PineconeVectorStore bound to our index and namespace.
 
     Args:
         embeddings: An instantiated LangChain-compatible embeddings object.
+        namespace:  Pinecone namespace string. Empty string = default namespace.
 
     Returns:
         A PineconeVectorStore ready for similarity search or upsert.
     """
     index_name = ensure_index()
-    log.debug("Connecting to PineconeVectorStore (index='%s').", index_name)
+    log.debug(
+        "Connecting to PineconeVectorStore (index='%s', namespace='%s').",
+        index_name,
+        namespace or "<default>",
+    )
     return PineconeVectorStore(
         index_name=index_name,
         embedding=embeddings,
+        namespace=namespace,
     )
 
 
-def get_retriever(embeddings: HuggingFaceEmbeddings) -> VectorStoreRetriever:
+def get_retriever(
+    embeddings: HuggingFaceEmbeddings,
+    namespace: str = "",
+) -> VectorStoreRetriever:
     """
     Return a configured VectorStoreRetriever for similarity search.
 
-    The number of documents to retrieve (top-k) is controlled by
-    ``settings.retriever_top_k``.
-
     Args:
         embeddings: An instantiated LangChain-compatible embeddings object.
+        namespace:  Pinecone namespace string. Empty = default namespace.
 
     Returns:
-        A VectorStoreRetriever instance.
+        A VectorStoreRetriever instance scoped to the namespace.
     """
-    vector_store = get_vector_store(embeddings)
+    vector_store = get_vector_store(embeddings, namespace=namespace)
     return vector_store.as_retriever(
         search_kwargs={"k": settings.retriever_top_k}
     )
 
 
-def upsert_documents(chunks: list, embeddings: HuggingFaceEmbeddings) -> None:
+def upsert_documents(
+    chunks: list,
+    embeddings: HuggingFaceEmbeddings,
+    namespace: str = "",
+) -> None:
     """
-    Embed and upsert a list of document chunks into Pinecone.
+    Embed and upsert a list of document chunks into a Pinecone namespace.
 
     Args:
         chunks:     List of LangChain Document objects (split chunks).
         embeddings: An instantiated LangChain-compatible embeddings object.
+        namespace:  Target Pinecone namespace. Empty = default namespace.
     """
     index_name = ensure_index()
-    log.info("Upserting %d chunks to Pinecone index '%s'...", len(chunks), index_name)
+    log.info(
+        "Upserting %d chunks to Pinecone index='%s', namespace='%s'...",
+        len(chunks),
+        index_name,
+        namespace or "<default>",
+    )
     PineconeVectorStore.from_documents(
         chunks,
         embeddings,
         index_name=index_name,
+        namespace=namespace,
     )
     log.info("Upsert complete.")
