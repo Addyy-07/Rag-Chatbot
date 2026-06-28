@@ -36,6 +36,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.config.settings import settings
+from backend.db.mongo_client import db_manager
 from backend.models.document import DocumentRecord, make_upload_date
 from backend.services.vector_store_service import upsert_documents
 from backend.utils.logger import get_logger
@@ -115,8 +116,26 @@ def ingest_pdf(
         chunk.metadata["filename"] = filename
         chunk.metadata["document_id"] = doc_id
 
-    # Step 3 — Upsert to namespace-scoped vector store
+    # Step 3 — Upsert to namespace-scoped vector store (Pinecone)
     upsert_documents(chunks, embeddings, namespace=namespace)
+
+    # Step 3b — Save raw chunks to MongoDB for on-the-fly BM25 Retrieval
+    try:
+        db = db_manager.get_db()
+        chunk_docs = []
+        for chunk in chunks:
+            chunk_docs.append({
+                "namespace": namespace,
+                "document_id": doc_id,
+                "text": chunk.page_content,
+                "metadata": chunk.metadata
+            })
+        if chunk_docs:
+            db.document_chunks.insert_many(chunk_docs)
+            log.info("Saved %d raw chunks to MongoDB.", len(chunk_docs))
+    except Exception as exc:
+        log.error("Failed to save raw chunks to MongoDB: %s", exc, exc_info=True)
+        # We don't fail the ingestion if MongoDB chunk save fails (though BM25 will degrade)
 
     # Step 4 — Build and return DocumentRecord
     record = DocumentRecord(

@@ -39,7 +39,9 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from backend.config.settings import settings
 from backend.models.chat import ChatResult, SourceCitation
 from backend.prompts.rag_prompt import RAG_PROMPT
-from backend.services.multi_retriever_service import retrieve_from_namespaces
+from backend.services.retrieval.hybrid_retriever import retrieve_hybrid
+from backend.services.retrieval.query_rewriter import rewrite_query
+from backend.services.retrieval.reranker import rerank_documents
 from backend.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -181,13 +183,23 @@ def get_answer(
         target_namespaces,
     )
 
-    # Step 1 — Retrieve relevant chunks across namespaces
-    docs = retrieve_from_namespaces(question, target_namespaces, embeddings)
-    log.debug("Total retrieved: %d chunk(s).", len(docs))
-
-    # Step 2 — Build context and history
-    context = _build_context(docs)
+    # Step 1 — Build context and history (do history first for rewriting)
     history_text = _format_history(history)
+    
+    # Step 1b — Rewrite query based on conversation history
+    optimized_query = rewrite_query(question, history_text)
+
+    # Step 2 — Retrieve relevant chunks across namespaces (Hybrid: Dense + Sparse)
+    # We ask for a bit more (e.g., top_k=10) so the reranker has room to filter.
+    docs = retrieve_hybrid(optimized_query, target_namespaces, embeddings, top_k_per_namespace=10)
+    log.debug("Total retrieved before reranking: %d chunk(s).", len(docs))
+    
+    # Step 3 — Rerank and compress context with Cross-Encoder
+    docs = rerank_documents(optimized_query, docs, top_k=settings.retriever_top_k)
+    log.debug("Total retrieved after reranking: %d chunk(s).", len(docs))
+
+    # Step 4 — Build context for LLM prompt
+    context = _build_context(docs)
 
     if not context.strip():
         log.warning("No relevant context found in any namespace.")
