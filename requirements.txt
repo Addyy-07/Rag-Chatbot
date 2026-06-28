@@ -1,11 +1,28 @@
-langchain
-langchain-community
-langchain-pinecone
-langchain-groq
-langchain-huggingface
-langchain-text-splitters
-pinecone
-pypdf
-python-dotenv
-streamlit
-sentence-transformers
+# ── Core LangChain ─────────────────────────────────────────────────────────────
+langchain==0.3.25
+langchain-community==0.3.24
+langchain-core==0.3.62
+langchain-text-splitters==0.3.8
+
+# ── LLM & Embedding providers ─────────────────────────────────────────────────
+langchain-groq==0.3.2
+langchain-huggingface==0.2.0
+sentence-transformers==4.1.0
+
+# ── Vector database ────────────────────────────────────────────────────────────
+langchain-pinecone==0.2.0
+pinecone==6.0.2
+
+# ── Document loaders ──────────────────────────────────────────────────────────
+pypdf==5.6.0
+
+# ── Configuration & environment ───────────────────────────────────────────────
+python-dotenv==1.1.0
+pydantic-settings==2.9.1
+
+# ── UI framework ──────────────────────────────────────────────────────────────
+streamlit==1.45.1
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.4.1
+pytest-mock==3.14.1
