@@ -41,6 +41,7 @@ def handle_pdf_upload(
     uploaded_files: list[UploadedFile],
     embeddings: HuggingFaceEmbeddings,
     registry: DocumentRegistry,
+    token: str,
     owner_id: str | None = None,
 ) -> list[DocumentRecord]:
     """
@@ -72,7 +73,16 @@ def handle_pdf_upload(
     log.info("Ingest router: processing %d file(s).", len(uploaded_files))
     successful: list[DocumentRecord] = []
 
+    from backend.services.usage_api_client import check_upload_limit
+
     for uploaded_file in uploaded_files:
+        # Check SaaS Upload Limit before processing each file
+        success, error_msg = check_upload_limit(token)
+        if not success:
+            st.error(f"Cannot upload '{uploaded_file.name}': {error_msg}")
+            log.warning("Upload limit exceeded. Skipped remaining files.")
+            break
+
         doc_id = str(uuid.uuid4())
         log.info(
             "Processing '%s' → doc_id=%s", uploaded_file.name, doc_id

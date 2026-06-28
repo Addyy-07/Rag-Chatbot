@@ -51,6 +51,7 @@ class UserDocument(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: datetime | None = None
     is_active: bool = True
+    tier: str = Field(default="free", description="User subscription tier: 'free' or 'pro'")
     
     model_config = ConfigDict(
         populate_by_name=True,

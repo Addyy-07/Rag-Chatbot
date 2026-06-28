@@ -34,7 +34,6 @@ Usage
 """
 
 import json
-from pathlib import Path
 from typing import Optional
 
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -42,6 +41,7 @@ from pinecone import Pinecone
 
 from backend.config.settings import settings
 from backend.models.document import DocumentRecord
+from backend.db.mongo_client import db_manager
 from backend.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -49,137 +49,74 @@ log = get_logger(__name__)
 
 class DocumentRegistry:
     """
-    JSON-backed registry of DocumentRecord objects.
-
-    Each instance reads from / writes to the file at ``settings.registry_path``.
-    Multiple instances pointing to the same path are safe for reads; writes
-    are atomic (write-to-temp + rename on POSIX).
-
-    Usage::
-
-        registry = DocumentRegistry()
-        registry.add(record)
-        docs = registry.get_all()
-        doc  = registry.get("some-uuid")
-        registry.delete("some-uuid")
+    MongoDB-backed registry of DocumentRecord objects.
     """
 
     def __init__(self, registry_path: Optional[str] = None) -> None:
-        self._path = Path(registry_path or settings.registry_path)
-
-    # ── Internal helpers ───────────────────────────────────────────────────────
-
-    def _load_raw(self) -> list[dict]:
-        """Return the raw list of record dicts from the JSON file."""
-        if not self._path.exists():
-            return []
-        try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, IOError) as exc:
-            log.error("Registry file corrupted or unreadable: %s", exc)
-            return []
-
-    def _save_raw(self, records: list[dict]) -> None:
-        """Persist a list of record dicts to the JSON file (atomic write)."""
-        tmp_path = self._path.with_suffix(".tmp")
-        try:
-            tmp_path.write_text(
-                json.dumps(records, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            tmp_path.replace(self._path)  # Atomic on POSIX
-            log.debug("Registry saved: %d record(s).", len(records))
-        except IOError as exc:
-            log.error("Failed to save registry: %s", exc)
-            raise
+        # registry_path is kept for backward compatibility signature, but ignored.
+        self.db = db_manager.get_db()
+        # Ensure index on document_id for fast lookups
+        self.db.document_registry.create_index([("document_id", 1)], unique=True)
+        self.db.document_registry.create_index([("owner_id", 1)])
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def add(self, record: DocumentRecord) -> None:
         """
-        Persist a new DocumentRecord to the registry.
-
-        If a record with the same ``document_id`` already exists, it is
-        replaced (idempotent re-ingestion).
-
-        Args:
-            record: The DocumentRecord to persist.
+        Persist a new DocumentRecord to the MongoDB registry.
         """
-        records = self._load_raw()
-        # Remove any existing entry with the same ID (idempotent)
-        records = [r for r in records if r.get("document_id") != record.document_id]
-        records.append(record.model_dump())
-        self._save_raw(records)
-        log.info("Registry: added document '%s' (%s).", record.filename, record.document_id)
+        data = record.model_dump()
+        self.db.document_registry.replace_one(
+            {"document_id": record.document_id},
+            data,
+            upsert=True
+        )
+        log.info("Registry: added document '%s' (%s) to MongoDB.", record.filename, record.document_id)
 
     def get_all(self, owner_id: str | None = None) -> list[DocumentRecord]:
         """
         Return all documents in the registry (newest first).
         If owner_id is provided, only return documents owned by that user.
         """
-        raw = self._load_raw()
+        query = {"owner_id": owner_id} if owner_id else {}
+        cursor = self.db.document_registry.find(query).sort("upload_date", -1)
         records = []
-        for item in raw:
+        for item in cursor:
             try:
+                # Remove MongoDB _id before validating
+                item.pop("_id", None)
                 records.append(DocumentRecord.model_validate(item))
             except Exception as exc:
                 log.warning("Skipping malformed registry entry: %s", exc)
-
-        if owner_id:
-            records = [r for r in records if r.owner_id == owner_id]
-
-        records.sort(key=lambda r: r.upload_date, reverse=True)
         return records
 
     def get(self, document_id: str) -> Optional[DocumentRecord]:
         """
         Return a single DocumentRecord by its ID, or None if not found.
-
-        Args:
-            document_id: The UUID string of the document to retrieve.
-
-        Returns:
-            DocumentRecord if found, else None.
         """
-        for item in self._load_raw():
-            if item.get("document_id") == document_id:
-                try:
-                    return DocumentRecord.model_validate(item)
-                except Exception as exc:
-                    log.warning("Malformed registry entry for %s: %s", document_id, exc)
-                    return None
+        item = self.db.document_registry.find_one({"document_id": document_id})
+        if item:
+            item.pop("_id", None)
+            try:
+                return DocumentRecord.model_validate(item)
+            except Exception as exc:
+                log.warning("Malformed registry entry for %s: %s", document_id, exc)
         return None
 
     def delete(self, document_id: str, embeddings: Optional[HuggingFaceEmbeddings] = None, owner_id: str | None = None) -> bool:
         """
         Remove a document from the registry and purge its Pinecone namespace.
-
-        Args:
-            document_id: The UUID of the document to delete.
-            embeddings:  Optional — provided to confirm namespace exists before deletion.
-                         Pass None to skip Pinecone cleanup (useful in tests).
-            owner_id:    Optional — ensure only the owner can delete it.
-
-        Returns:
-            True if the document was found and deleted, False if not found or unauthorized.
         """
-        records = self._load_raw()
-        before_count = len(records)
-        
-        # If owner_id is provided, we must check ownership before deletion
+        query = {"document_id": document_id}
         if owner_id:
-            doc_to_delete = next((r for r in records if r.get("document_id") == document_id), None)
-            if not doc_to_delete or doc_to_delete.get("owner_id") != owner_id:
-                log.warning("Registry: document '%s' not found or unauthorized for deletion by %s.", document_id, owner_id)
-                return False
-
-        records = [r for r in records if r.get("document_id") != document_id]
-
-        if len(records) == before_count:
-            log.warning("Registry: document '%s' not found for deletion.", document_id)
+            query["owner_id"] = owner_id
+            
+        result = self.db.document_registry.delete_one(query)
+        
+        if result.deleted_count == 0:
+            log.warning("Registry: document '%s' not found for deletion or unauthorized.", document_id)
             return False
 
-        self._save_raw(records)
         log.info("Registry: deleted document '%s'.", document_id)
 
         # Purge Pinecone namespace
@@ -222,6 +159,7 @@ class DocumentRegistry:
         """
         return [doc.namespace for doc in self.get_all(owner_id=owner_id)]
 
-    def count(self) -> int:
-        """Return the total number of registered documents."""
-        return len(self._load_raw())
+    def count(self, owner_id: str | None = None) -> int:
+        """Return the total number of registered documents (for a given user if specified)."""
+        query = {"owner_id": owner_id} if owner_id else {}
+        return self.db.document_registry.count_documents(query)

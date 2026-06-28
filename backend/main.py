@@ -33,6 +33,7 @@ from backend.routes.ingest_router import handle_pdf_upload
 from backend.services.document_registry import DocumentRegistry
 from backend.services.embedding_service import create_embedding_model
 from backend.services import chat_api_client
+from backend.services.usage_api_client import get_usage_limits, track_query
 from backend.utils.file_utils import human_readable_size
 from backend.utils.logger import configure_root_logger, get_logger
 from frontend.styles import (
@@ -159,10 +160,38 @@ def _render_sidebar(registry: DocumentRegistry) -> None:
                         st.rerun()
                         
             st.markdown("<br>", unsafe_allow_html=True)
+            
+            # ── Usage Limits UI ────────────────────────────────────────────────────
+            usage = get_usage_limits(token)
+            if usage:
+                st.markdown("### 📊 SaaS Usage")
+                tier_name = usage.get("tier", "free").upper()
+                st.caption(f"**Current Plan:** {tier_name}")
+                
+                # PDFs
+                c_pdfs = usage.get("current_pdfs", 0)
+                m_pdfs = usage.get("max_pdfs", 5)
+                pdf_pct = min(100, int((c_pdfs / m_pdfs) * 100)) if m_pdfs < 999999 else 0
+                if m_pdfs < 999999:
+                    st.progress(pdf_pct, text=f"PDFs: {c_pdfs} / {m_pdfs}")
+                else:
+                    st.caption(f"PDFs: {c_pdfs} / ∞")
+                    
+                # Queries
+                c_queries = usage.get("current_queries", 0)
+                m_queries = usage.get("max_queries", 50)
+                q_pct = min(100, int((c_queries / m_queries) * 100)) if m_queries < 999999 else 0
+                if m_queries < 999999:
+                    st.progress(q_pct, text=f"Queries today: {c_queries} / {m_queries}")
+                else:
+                    st.caption(f"Queries today: {c_queries} / ∞")
+                    
+                if tier_name == "FREE":
+                    st.info("Upgrade to Pro for unlimited usage! 🚀")
+            
+            st.markdown("---")
             if st.button("🚪 Logout", key="btn_logout", use_container_width=True):
-                st.session_state.pop("jwt_token", None)
-                st.session_state.pop("user", None)
-                st.session_state.messages = []
+                st.session_state.clear()
                 st.rerun()
 
 
@@ -219,7 +248,8 @@ def _render_upload_section(registry: DocumentRegistry) -> None:
                         text=f"Processing {uf.name} ({i + 1}/{len(uploaded_files)})...",
                     )
                     user_id = st.session_state.get("user", {}).get("id") if st.session_state.get("user") else None
-                    batch = handle_pdf_upload([uf], embeddings, registry, owner_id=user_id)
+                    token = st.session_state.get("jwt_token")
+                    batch = handle_pdf_upload([uf], embeddings, registry, token=token, owner_id=user_id)
                     results.extend(batch)
 
                 progress_bar.progress(1.0, text="All done!")
@@ -388,6 +418,12 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
 
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
+                # ── Enforce SaaS Limit ─────────────────────────────────────────
+                success, error_msg = track_query(token)
+                if not success:
+                    st.error(error_msg)
+                    st.stop()
+                    
                 try:
                     embeddings = _get_embeddings()
                     result = handle_chat_query(
