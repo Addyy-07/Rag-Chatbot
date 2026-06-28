@@ -36,6 +36,8 @@ from backend.services import chat_api_client
 from backend.services.usage_api_client import get_usage_limits, track_query
 from backend.utils.file_utils import human_readable_size
 from backend.utils.logger import configure_root_logger, get_logger
+from backend.views.pricing_view import render_pricing_view
+from backend.views.billing_view import render_billing_view
 from frontend.styles import (
     FOOTER_HTML,
     GLOBAL_CSS,
@@ -159,6 +161,25 @@ def _render_sidebar(registry: DocumentRegistry) -> None:
                             st.session_state.messages = []
                         st.rerun()
                         
+            # ── Main Navigation ────────────────────────────────────────────────────
+            st.markdown("### 🧭 Navigation")
+            if "current_page" not in st.session_state:
+                st.session_state.current_page = "chat"
+                
+            col_nav1, col_nav2, col_nav3 = st.columns(3)
+            with col_nav1:
+                if st.button("💬 Chat", use_container_width=True, type="primary" if st.session_state.current_page == "chat" else "secondary"):
+                    st.session_state.current_page = "chat"
+                    st.rerun()
+            with col_nav2:
+                if st.button("🚀 Pricing", use_container_width=True, type="primary" if st.session_state.current_page == "pricing" else "secondary"):
+                    st.session_state.current_page = "pricing"
+                    st.rerun()
+            with col_nav3:
+                if st.button("💳 Billing", use_container_width=True, type="primary" if st.session_state.current_page == "billing" else "secondary"):
+                    st.session_state.current_page = "billing"
+                    st.rerun()
+            
             st.markdown("<br>", unsafe_allow_html=True)
             
             # ── Usage Limits UI ────────────────────────────────────────────────────
@@ -194,8 +215,15 @@ def _render_sidebar(registry: DocumentRegistry) -> None:
                 st.session_state.clear()
                 st.rerun()
 
+        # ── Page Routing ───────────────────────────────────────────────────────────
+        if st.session_state.get("current_page") == "pricing":
+            render_pricing_view(token)
+            return
+        elif st.session_state.get("current_page") == "billing":
+            render_billing_view(token)
+            return
 
-# ── Upload Section ─────────────────────────────────────────────────────────────
+    # ── Main Chat Window ─────────────────────────────────────────────────────────────
 
 def _render_upload_section(registry: DocumentRegistry) -> None:
     """Render the multi-file upload panel."""

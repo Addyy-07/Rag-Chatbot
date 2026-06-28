@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 
 from api.database.connection import connect_to_mongo, close_mongo_connection
-from api.routes import auth_router, user_router, chat_history_router, usage_router
+from api.routes import auth_router, user_router, chat_history_router, usage_router, billing_router, webhook_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,6 +46,8 @@ def create_app() -> FastAPI:
     app.include_router(user_router.router, prefix="/api/v1")
     app.include_router(chat_history_router.router, prefix="/api/v1")
     app.include_router(usage_router.router, prefix="/api/v1")
+    app.include_router(billing_router.router, prefix="/api/v1")
+    app.include_router(webhook_router.router, prefix="/api/v1")
     
     return app
 

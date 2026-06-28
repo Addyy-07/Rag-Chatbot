@@ -53,6 +53,12 @@ class UserDocument(BaseModel):
     is_active: bool = True
     tier: str = Field(default="free", description="User subscription tier: 'free' or 'pro'")
     
+    # Billing fields
+    subscription_id: str | None = None
+    subscription_status: str | None = None
+    subscription_end: datetime | None = None
+    cancel_at_period_end: bool = False
+    
     model_config = ConfigDict(
         populate_by_name=True,
         arbitrary_types_allowed=True,

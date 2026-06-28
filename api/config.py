@@ -19,6 +19,13 @@ class APISettings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 1440  # 24 hours
     
+    # Razorpay Settings
+    razorpay_key_id: str = "rzp_test_change_me"
+    razorpay_key_secret: str = "change_me"
+    razorpay_webhook_secret: str = "change_me"
+    razorpay_plan_monthly: str = "plan_change_me"
+    razorpay_plan_yearly: str = "plan_change_me"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
