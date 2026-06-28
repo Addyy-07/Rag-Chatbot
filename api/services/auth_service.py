@@ -138,3 +138,59 @@ async def login(request: LoginRequest, db: AsyncIOMotorDatabase) -> TokenRespons
             "full_name": user.full_name
         }
     )
+
+import secrets
+
+async def forgot_password(email: str, db: AsyncIOMotorDatabase) -> dict:
+    """Generate a reset token and mock sending an email."""
+    user = await db.users.find_one({"email": email.lower()})
+    if not user:
+        # Don't reveal that the user doesn't exist for security
+        return {"message": "If that email is in our system, we've sent a reset link."}
+        
+    # Generate token (in real app, use a secure URL-safe token)
+    reset_token = secrets.token_urlsafe(32)
+    
+    # Store token and expiry (e.g., 1 hour)
+    expires = datetime.utcnow() + timedelta(hours=1)
+    
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "reset_password_token": reset_token,
+            "reset_password_expires": expires
+        }}
+    )
+    
+    # MOCK SENDING EMAIL
+    log.info(f"========== PASSWORD RESET MOCK EMAIL ==========")
+    log.info(f"To: {email}")
+    log.info(f"Link: http://localhost:3000/reset-password?token={reset_token}")
+    log.info(f"===============================================")
+    
+    return {"message": "If that email is in our system, we've sent a reset link."}
+
+async def reset_password(token: str, new_password: str, db: AsyncIOMotorDatabase) -> dict:
+    """Validate token and reset the user's password."""
+    user = await db.users.find_one({
+        "reset_password_token": token,
+        "reset_password_expires": {"$gt": datetime.utcnow()}
+    })
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+        
+    # Hash new password
+    hashed_pwd = hash_password(new_password)
+    
+    # Update user and clear token
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"hashed_password": hashed_pwd},
+         "$unset": {"reset_password_token": "", "reset_password_expires": ""}}
+    )
+    
+    return {"message": "Password successfully reset."}

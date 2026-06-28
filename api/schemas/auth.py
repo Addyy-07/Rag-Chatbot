@@ -21,3 +21,10 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: dict  # Simplified user profile to return with the token
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8)

@@ -59,6 +59,10 @@ class UserDocument(BaseModel):
     subscription_end: datetime | None = None
     cancel_at_period_end: bool = False
     
+    # Auth fields
+    reset_password_token: str | None = None
+    reset_password_expires: datetime | None = None
+    
     model_config = ConfigDict(
         populate_by_name=True,
         arbitrary_types_allowed=True,
