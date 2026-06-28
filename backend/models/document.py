@@ -46,6 +46,7 @@ class DocumentRecord(BaseModel):
     """
 
     document_id: str = Field(..., description="UUID4 document identifier")
+    owner_id: str | None = None
     filename: str = Field(..., min_length=1, description="Original PDF filename")
     upload_date: str = Field(..., description="ISO-8601 UTC upload timestamp")
     page_count: int = Field(..., ge=0, description="Number of PDF pages")

@@ -60,6 +60,7 @@ def ingest_pdf(
     document_id: str | None = None,
     filename: str = "document.pdf",
     size_bytes: int = 0,
+    owner_id: str | None = None,
 ) -> DocumentRecord:
     """
     Run the full PDF ingestion pipeline for a single document.
@@ -85,7 +86,7 @@ def ingest_pdf(
         Any exception propagated from PyPDFLoader or PineconeVectorStore.
     """
     doc_id = document_id or str(uuid.uuid4())
-    namespace = doc_id  # Namespace == document_id
+    namespace = f"{owner_id}_{doc_id}" if owner_id else doc_id
 
     # Step 1 — Load PDF
     log.info("Loading PDF: %s (doc_id=%s)", pdf_path, doc_id)
@@ -120,6 +121,7 @@ def ingest_pdf(
     # Step 4 — Build and return DocumentRecord
     record = DocumentRecord(
         document_id=doc_id,
+        owner_id=owner_id,
         filename=filename,
         upload_date=make_upload_date(),
         page_count=len(documents),

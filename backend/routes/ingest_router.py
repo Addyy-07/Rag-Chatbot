@@ -38,9 +38,10 @@ log = get_logger(__name__)
 
 
 def handle_pdf_upload(
-    uploaded_files: list[st.runtime.uploaded_file_manager.UploadedFile],
+    uploaded_files: list[UploadedFile],
     embeddings: HuggingFaceEmbeddings,
     registry: DocumentRegistry,
+    owner_id: str | None = None,
 ) -> list[DocumentRecord]:
     """
     Orchestrate the full ingestion flow for one or more Streamlit UploadedFiles.
@@ -58,6 +59,7 @@ def handle_pdf_upload(
         uploaded_files: List of Streamlit UploadedFile objects.
         embeddings:     Cached HuggingFaceEmbeddings singleton.
         registry:       DocumentRegistry instance for persistence.
+        owner_id:       Optional identifier for the user or entity owning these files.
 
     Returns:
         List of successfully ingested DocumentRecord objects.
@@ -84,6 +86,7 @@ def handle_pdf_upload(
                     document_id=doc_id,
                     filename=uploaded_file.name,
                     size_bytes=len(file_bytes),
+                    owner_id=owner_id,
                 )
             registry.add(record)
             successful.append(record)

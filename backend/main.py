@@ -190,7 +190,8 @@ def _render_upload_section(registry: DocumentRegistry) -> None:
                         (i) / len(uploaded_files),
                         text=f"Processing {uf.name} ({i + 1}/{len(uploaded_files)})...",
                     )
-                    batch = handle_pdf_upload([uf], embeddings, registry)
+                    user_id = st.session_state.get("user", {}).get("id") if st.session_state.get("user") else None
+                    batch = handle_pdf_upload([uf], embeddings, registry, owner_id=user_id)
                     results.extend(batch)
 
                 progress_bar.progress(1.0, text="All done!")

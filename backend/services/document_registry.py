@@ -112,12 +112,10 @@ class DocumentRegistry:
         self._save_raw(records)
         log.info("Registry: added document '%s' (%s).", record.filename, record.document_id)
 
-    def get_all(self) -> list[DocumentRecord]:
+    def get_all(self, owner_id: str | None = None) -> list[DocumentRecord]:
         """
-        Return all registered documents, sorted by upload_date descending.
-
-        Returns:
-            List of DocumentRecord objects (newest first).
+        Return all documents in the registry (newest first).
+        If owner_id is provided, only return documents owned by that user.
         """
         raw = self._load_raw()
         records = []
@@ -126,6 +124,10 @@ class DocumentRegistry:
                 records.append(DocumentRecord.model_validate(item))
             except Exception as exc:
                 log.warning("Skipping malformed registry entry: %s", exc)
+
+        if owner_id:
+            records = [r for r in records if r.owner_id == owner_id]
+
         records.sort(key=lambda r: r.upload_date, reverse=True)
         return records
 
@@ -148,7 +150,7 @@ class DocumentRegistry:
                     return None
         return None
 
-    def delete(self, document_id: str, embeddings: Optional[HuggingFaceEmbeddings] = None) -> bool:
+    def delete(self, document_id: str, embeddings: Optional[HuggingFaceEmbeddings] = None, owner_id: str | None = None) -> bool:
         """
         Remove a document from the registry and purge its Pinecone namespace.
 
@@ -156,12 +158,21 @@ class DocumentRegistry:
             document_id: The UUID of the document to delete.
             embeddings:  Optional — provided to confirm namespace exists before deletion.
                          Pass None to skip Pinecone cleanup (useful in tests).
+            owner_id:    Optional — ensure only the owner can delete it.
 
         Returns:
-            True if the document was found and deleted, False if not found.
+            True if the document was found and deleted, False if not found or unauthorized.
         """
         records = self._load_raw()
         before_count = len(records)
+        
+        # If owner_id is provided, we must check ownership before deletion
+        if owner_id:
+            doc_to_delete = next((r for r in records if r.get("document_id") == document_id), None)
+            if not doc_to_delete or doc_to_delete.get("owner_id") != owner_id:
+                log.warning("Registry: document '%s' not found or unauthorized for deletion by %s.", document_id, owner_id)
+                return False
+
         records = [r for r in records if r.get("document_id") != document_id]
 
         if len(records) == before_count:
@@ -200,7 +211,7 @@ class DocumentRegistry:
                 exc,
             )
 
-    def get_all_namespaces(self) -> list[str]:
+    def get_all_namespaces(self, owner_id: str | None = None) -> list[str]:
         """
         Return the Pinecone namespace for every registered document.
 
@@ -209,7 +220,7 @@ class DocumentRegistry:
         Returns:
             List of namespace strings (== document_ids), newest first.
         """
-        return [doc.namespace for doc in self.get_all()]
+        return [doc.namespace for doc in self.get_all(owner_id=owner_id)]
 
     def count(self) -> int:
         """Return the total number of registered documents."""
