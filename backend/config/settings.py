@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     registry_path: str = ".document_registry.json"   # Flat-file metadata store
     max_upload_files: int = 10                         # Max simultaneous uploads
 
+    # ── Auth API ──────────────────────────────────────────────────────────────────
+    api_base_url: str = "http://localhost:8000/api/v1"
+
     # ── App metadata ────────────────────────────────────────────────────────────
     app_title: str = "DocChat AI"
     app_icon: str = "🧠"

@@ -25,6 +25,7 @@ Run:
 """
 
 import streamlit as st
+import httpx
 
 from backend.config.settings import settings
 from backend.routes.chat_router import handle_chat_query
@@ -86,9 +87,13 @@ def _render_sidebar(registry: DocumentRegistry) -> None:
             render_page_header(f"{settings.app_icon} DocChat AI", f"v{settings.app_version}"),
             unsafe_allow_html=True,
         )
+        user = st.session_state.get("user")
+        if user:
+            st.markdown(f"<div style='margin-bottom: 15px; color: #a5b4fc'>👤 Welcome, {user.get('full_name') or user.get('username')}</div>", unsafe_allow_html=True)
+            
         st.markdown(render_sidebar_header("📚 DOCUMENT LIBRARY"), unsafe_allow_html=True)
 
-        docs = registry.get_all()
+        docs = registry.get_all(owner_id=user.get("id") if user else None)
 
         if not docs:
             st.markdown(render_library_empty_state(), unsafe_allow_html=True)
@@ -123,6 +128,14 @@ def _render_sidebar(registry: DocumentRegistry) -> None:
                             st.rerun()
 
                 st.markdown("<hr style='border-color:#1e2130;margin:4px 0 10px'>", unsafe_allow_html=True)
+                
+        if st.session_state.get("jwt_token"):
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🚪 Logout", key="btn_logout", use_container_width=True):
+                st.session_state.pop("jwt_token", None)
+                st.session_state.pop("user", None)
+                st.session_state.messages = []
+                st.rerun()
 
 
 # ── Upload Section ─────────────────────────────────────────────────────────────
@@ -205,7 +218,8 @@ def _render_upload_section(registry: DocumentRegistry) -> None:
 
 def _render_chat_section(registry: DocumentRegistry) -> None:
     """Render the multi-mode chat interface."""
-    docs = registry.get_all()
+    user = st.session_state.get("user")
+    docs = registry.get_all(owner_id=user.get("id") if user else None)
 
     if not docs:
         st.info("📭 Your library is empty. Upload PDFs using the sidebar.")
@@ -259,7 +273,7 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
 
     else:  # All Documents
         mode_key = "all"
-        target_namespaces = registry.get_all_namespaces()
+        target_namespaces = registry.get_all_namespaces(owner_id=user.get("id") if user else None)
         st.caption(f"🌐 Searching across **{len(target_namespaces)}** document(s)")
 
     # ── Mode badge + context info ──────────────────────────────────────────────
@@ -351,25 +365,104 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
             {"role": "assistant", "content": answer, "citations": citations}
         )
 
+# ── Auth Gate ──────────────────────────────────────────────────────────────────
+
+def _render_auth_page():
+    """Render login and signup tabs."""
+    st.markdown(
+        render_page_header(f"{settings.app_icon} {settings.app_title}", "Login to access your documents"),
+        unsafe_allow_html=True,
+    )
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
+        
+        with tab_login:
+            with st.form("login_form"):
+                email = st.text_input("Email")
+                password = st.text_input("Password", type="password")
+                submit = st.form_submit_button("Login", use_container_width=True)
+                
+                if submit:
+                    if not email or not password:
+                        st.error("Please enter email and password.")
+                    else:
+                        try:
+                            resp = httpx.post(
+                                f"{settings.api_base_url}/auth/login",
+                                json={"email": email, "password": password}
+                            )
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                st.session_state.jwt_token = data["access_token"]
+                                st.session_state.user = data["user"]
+                                st.success("Logged in successfully!")
+                                st.rerun()
+                            else:
+                                st.error(f"Login failed: {resp.json().get('detail', 'Unknown error')}")
+                        except Exception as e:
+                            st.error(f"Connection error: {e}")
+                            
+        with tab_signup:
+            with st.form("signup_form"):
+                s_email = st.text_input("Email")
+                s_username = st.text_input("Username")
+                s_name = st.text_input("Full Name (Optional)")
+                s_password = st.text_input("Password", type="password")
+                s_submit = st.form_submit_button("Sign Up", use_container_width=True)
+                
+                if s_submit:
+                    if not s_email or not s_username or not s_password:
+                        st.error("Please fill all required fields.")
+                    elif len(s_password) < 8:
+                        st.error("Password must be at least 8 characters.")
+                    else:
+                        try:
+                            resp = httpx.post(
+                                f"{settings.api_base_url}/auth/signup",
+                                json={
+                                    "email": s_email,
+                                    "username": s_username,
+                                    "password": s_password,
+                                    "full_name": s_name if s_name else None
+                                }
+                            )
+                            if resp.status_code == 201:
+                                data = resp.json()
+                                st.session_state.jwt_token = data["access_token"]
+                                st.session_state.user = data["user"]
+                                st.success("Account created successfully!")
+                                st.rerun()
+                            else:
+                                st.error(f"Signup failed: {resp.json().get('detail', 'Unknown error')}")
+                        except Exception as e:
+                            st.error(f"Connection error: {e}")
 
 # ── App entrypoint ─────────────────────────────────────────────────────────────
 
 registry = _get_registry()
 
-# Render sidebar (always visible)
-_render_sidebar(registry)
-
-# Render main panel based on library state
-docs = registry.get_all()
-if not docs:
-    _render_upload_section(registry)
+# Check authentication
+if not st.session_state.get("jwt_token"):
+    _render_auth_page()
 else:
-    # Show tabs: Chat | Upload More
-    tab_chat, tab_upload = st.tabs(["💬 Chat", "📤 Upload More PDFs"])
-    with tab_chat:
-        _render_chat_section(registry)
-    with tab_upload:
+    # Render sidebar (always visible)
+    _render_sidebar(registry)
+
+    # Render main panel based on library state
+    user = st.session_state.get("user")
+    docs = registry.get_all(owner_id=user.get("id") if user else None)
+    if not docs:
         _render_upload_section(registry)
+    else:
+        # Show tabs: Chat | Upload More
+        tab_chat, tab_upload = st.tabs(["💬 Chat", "📤 Upload More PDFs"])
+        with tab_chat:
+            _render_chat_section(registry)
+        with tab_upload:
+            _render_upload_section(registry)
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown(FOOTER_HTML, unsafe_allow_html=True)
