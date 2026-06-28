@@ -32,6 +32,7 @@ from backend.routes.chat_router import handle_chat_query
 from backend.routes.ingest_router import handle_pdf_upload
 from backend.services.document_registry import DocumentRegistry
 from backend.services.embedding_service import create_embedding_model
+from backend.services import chat_api_client
 from backend.utils.file_utils import human_readable_size
 from backend.utils.logger import configure_root_logger, get_logger
 from frontend.styles import (
@@ -130,6 +131,33 @@ def _render_sidebar(registry: DocumentRegistry) -> None:
                 st.markdown("<hr style='border-color:#1e2130;margin:4px 0 10px'>", unsafe_allow_html=True)
                 
         if st.session_state.get("jwt_token"):
+            st.markdown(render_sidebar_header("💬 CHAT HISTORY"), unsafe_allow_html=True)
+            token = st.session_state.get("jwt_token")
+            sessions = chat_api_client.get_chat_sessions(token)
+            
+            if st.button("➕ New Chat", use_container_width=True):
+                st.session_state.pop("active_chat_id", None)
+                st.session_state.pop("loaded_chat_id", None)
+                st.session_state.messages = []
+                st.rerun()
+                
+            for sess in sessions:
+                col_chat_btn, col_chat_del = st.columns([4, 1])
+                with col_chat_btn:
+                    is_active = (st.session_state.get("active_chat_id") == sess["id"])
+                    label = f"💬 **{sess['title']}**" if is_active else f"💬 {sess['title']}"
+                    if st.button(label, key=f"chat_btn_{sess['id']}", use_container_width=True):
+                        st.session_state.active_chat_id = sess["id"]
+                        st.rerun()
+                with col_chat_del:
+                    if st.button("🗑️", key=f"chat_del_{sess['id']}", help="Delete chat"):
+                        chat_api_client.delete_chat_session(sess["id"], token)
+                        if st.session_state.get("active_chat_id") == sess["id"]:
+                            st.session_state.pop("active_chat_id", None)
+                            st.session_state.pop("loaded_chat_id", None)
+                            st.session_state.messages = []
+                        st.rerun()
+                        
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🚪 Logout", key="btn_logout", use_container_width=True):
                 st.session_state.pop("jwt_token", None)
@@ -234,59 +262,90 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Mode selector ──────────────────────────────────────────────────────────
-    st.markdown("<div class='mode-header'>CHAT MODE</div>", unsafe_allow_html=True)
-    mode = st.radio(
-        "Chat mode",
-        options=["📄 Single Document", "📚 Select Documents", "🌐 All Documents"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="chat_mode",
-    )
-
-    # ── Namespace resolution based on mode ─────────────────────────────────────
-    target_namespaces: list[str] = []
-    mode_key = "single"
-
-    if mode == "📄 Single Document":
+    active_chat_id = st.session_state.get("active_chat_id")
+    token = st.session_state.get("jwt_token")
+    
+    # ── Load existing session ───────────────────────────────────────────────────
+    if active_chat_id:
+        if "loaded_chat_id" not in st.session_state or st.session_state.loaded_chat_id != active_chat_id:
+            sess_detail = chat_api_client.get_chat_session(active_chat_id, token)
+            if sess_detail:
+                st.session_state.messages = sess_detail["messages"]
+                st.session_state.target_namespaces = sess_detail["target_namespaces"]
+                st.session_state.loaded_chat_id = active_chat_id
+                st.session_state.chat_title = sess_detail["title"]
+                
+        target_namespaces = st.session_state.get("target_namespaces", [])
+        st.markdown(f"### {st.session_state.get('chat_title', 'Chat')}")
+        st.caption(f"Querying **{len(target_namespaces)}** namespace(s)")
+        
+        col_rename, _ = st.columns([2, 3])
+        with col_rename:
+            new_title = st.text_input("Rename chat", value=st.session_state.get('chat_title', ''), label_visibility="collapsed")
+            if new_title and new_title != st.session_state.get('chat_title', ''):
+                if chat_api_client.rename_chat_session(active_chat_id, new_title, token):
+                    st.session_state.chat_title = new_title
+                    st.rerun()
+    else:
+        # ── Mode selector ──────────────────────────────────────────────────────────
+        st.markdown("<div class='mode-header'>CHAT MODE</div>", unsafe_allow_html=True)
+        mode = st.radio(
+            "Chat mode",
+            options=["📄 Single Document", "📚 Select Documents", "🌐 All Documents"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="chat_mode",
+        )
+    
+        # ── Namespace resolution based on mode ─────────────────────────────────────
+        target_namespaces = []
         mode_key = "single"
-        doc_options = {d.filename: d.document_id for d in docs}
-        selected_name = st.selectbox(
-            "Select document",
-            options=list(doc_options.keys()),
-            key="single_doc_select",
-        )
-        if selected_name:
-            target_namespaces = [doc_options[selected_name]]
-
-    elif mode == "📚 Select Documents":
-        mode_key = "selected"
-        doc_options = {d.filename: d.document_id for d in docs}
-        selected_names = st.multiselect(
-            "Select documents to include",
-            options=list(doc_options.keys()),
-            default=list(doc_options.keys())[:2] if len(doc_options) >= 2 else list(doc_options.keys()),
-            key="multi_doc_select",
-        )
-        target_namespaces = [doc_options[n] for n in selected_names if n in doc_options]
-        if not target_namespaces:
-            st.warning("⚠️ Please select at least one document.")
-
-    else:  # All Documents
-        mode_key = "all"
-        target_namespaces = registry.get_all_namespaces(owner_id=user.get("id") if user else None)
-        st.caption(f"🌐 Searching across **{len(target_namespaces)}** document(s)")
-
-    # ── Mode badge + context info ──────────────────────────────────────────────
-    if target_namespaces:
-        col_badge, col_info = st.columns([2, 3])
-        with col_badge:
-            st.markdown(render_mode_badge(mode_key), unsafe_allow_html=True)
-        with col_info:
-            ns_count = len(target_namespaces)
-            st.caption(
-                f"Querying **{ns_count}** namespace{'s' if ns_count > 1 else ''}"
+    
+        if mode == "📄 Single Document":
+            mode_key = "single"
+            doc_options = {d.filename: d.document_id for d in docs}
+            selected_name = st.selectbox(
+                "Select document",
+                options=list(doc_options.keys()),
+                key="single_doc_select",
             )
+            if selected_name:
+                target_namespaces = [doc_options[selected_name]]
+    
+        elif mode == "📚 Select Documents":
+            mode_key = "selected"
+            doc_options = {d.filename: d.document_id for d in docs}
+            selected_names = st.multiselect(
+                "Select documents to include",
+                options=list(doc_options.keys()),
+                default=list(doc_options.keys())[:2] if len(doc_options) >= 2 else list(doc_options.keys()),
+                key="multi_doc_select",
+            )
+            target_namespaces = [doc_options[n] for n in selected_names if n in doc_options]
+            if not target_namespaces:
+                st.warning("⚠️ Please select at least one document.")
+    
+        else:  # All Documents
+            mode_key = "all"
+            target_namespaces = registry.get_all_namespaces(owner_id=user.get("id") if user else None)
+            st.caption(f"🌐 Searching across **{len(target_namespaces)}** document(s)")
+    
+        # ── Mode badge + context info ──────────────────────────────────────────────
+        if target_namespaces:
+            col_badge, col_info = st.columns([2, 3])
+            with col_badge:
+                st.markdown(render_mode_badge(mode_key), unsafe_allow_html=True)
+            with col_info:
+                ns_count = len(target_namespaces)
+                st.caption(
+                    f"Querying **{ns_count}** namespace{'s' if ns_count > 1 else ''}"
+                )
+    
+        # Clear messages when mode or selection changes (only if no active chat)
+        mode_state_key = f"{mode_key}_{','.join(sorted(target_namespaces))}"
+        if st.session_state.get("_last_mode_key") != mode_state_key:
+            st.session_state.messages = []
+            st.session_state["_last_mode_key"] = mode_state_key
 
     st.divider()
 
@@ -294,11 +353,6 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Clear messages when mode or selection changes
-    mode_state_key = f"{mode_key}_{','.join(sorted(target_namespaces))}"
-    if st.session_state.get("_last_mode_key") != mode_state_key:
-        st.session_state.messages = []
-        st.session_state["_last_mode_key"] = mode_state_key
 
     col_chat, col_actions = st.columns([5, 1])
     with col_actions:
@@ -365,6 +419,29 @@ def _render_chat_section(registry: DocumentRegistry) -> None:
         st.session_state.messages.append(
             {"role": "assistant", "content": answer, "citations": citations}
         )
+        
+        # ── Save to database ───────────────────────────────────────────────────
+        if not active_chat_id:
+            title = user_input[:30] + "..." if len(user_input) > 30 else user_input
+            new_id = chat_api_client.create_chat_session(title, target_namespaces, token)
+            if new_id:
+                active_chat_id = new_id
+                st.session_state.active_chat_id = new_id
+                st.session_state.loaded_chat_id = new_id
+                st.session_state.chat_title = title
+                
+        if active_chat_id:
+            chat_api_client.add_message(active_chat_id, "user", user_input, [], token)
+            # handle citations dict structure safely
+            citations_safe = []
+            if citations:
+                for c in citations:
+                    citations_safe.append({
+                        "source_file": c.get("source_file", ""),
+                        "page_number": c.get("page_number", None),
+                        "chunk_text": c.get("chunk_text", "")
+                    })
+            chat_api_client.add_message(active_chat_id, "assistant", answer, citations_safe, token)
 
 # ── Auth Gate ──────────────────────────────────────────────────────────────────
 
