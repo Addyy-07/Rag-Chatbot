@@ -28,6 +28,7 @@ WORKDIR /app
 # Copy application source (preserve folder structure)
 COPY backend/   ./backend/
 COPY frontend/  ./frontend/
+COPY api/       ./api/
 COPY .env.example .env.example
 
 # Switch to non-root user

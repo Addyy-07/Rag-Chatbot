@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # MongoDB for User Accounts
+  mongo:
+    image: mongo:6.0
+    container_name: docchat_mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - docchat_network
+
+  # FastAPI Authentication Service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: docchat_api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongo:27017
+      - MONGODB_DB_NAME=rag_chatbot_db
+      - JWT_SECRET_KEY=super-secret-jwt-key-please-change-in-prod
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - mongo
+    networks:
+      - docchat_network
+
+  # Streamlit Frontend (RAG UI)
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: docchat_streamlit
+    restart: always
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://api:8000/api/v1
+    env_file:
+      - .env
+    command: streamlit run backend/main.py --server.address=0.0.0.0
+    depends_on:
+      - api
+    networks:
+      - docchat_network
+
+volumes:
+  mongo_data:
+
+networks:
+  docchat_network:
+    driver: bridge
