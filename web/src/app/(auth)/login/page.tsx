@@ -13,6 +13,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 
+import { signIn } from "next-auth/react";
+
 export default function LoginPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
@@ -28,6 +30,11 @@ export default function LoginPage() {
       router.push("/");
     }, 1500);
   }
+
+  const handleGoogleSignIn = () => {
+    setIsLoading(true);
+    signIn("google", { callbackUrl: "/" });
+  };
 
   return (
     <motion.div
@@ -45,7 +52,7 @@ export default function LoginPage() {
         <CardContent>
           <div className="grid gap-4">
             <div className="grid grid-cols-2 gap-4">
-              <Button variant="outline" type="button" disabled={isLoading} onClick={() => toast.info("Google login (Placeholder)")}>
+              <Button variant="outline" type="button" disabled={isLoading} onClick={handleGoogleSignIn}>
                 <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
                   <path
                     d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"

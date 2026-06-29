@@ -46,7 +46,10 @@ class UserDocument(BaseModel):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
     email: str
     username: str
-    hashed_password: str
+    hashed_password: str = ""
+    auth_provider: str = Field(default="credentials", description="Authentication provider: 'credentials' or 'google'")
+    provider_id: str | None = None
+    avatar_url: str | None = None
     full_name: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     last_login: datetime | None = None

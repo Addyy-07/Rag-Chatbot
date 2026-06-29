@@ -39,6 +39,9 @@ class APISettings(BaseSettings):
     otp_max_verify_attempts: int = 5
     otp_cooldown_seconds: int = 60
     
+    # Google OAuth
+    google_client_id: str = ""
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

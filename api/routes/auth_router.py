@@ -12,9 +12,11 @@ from api.schemas.auth import (
     SignupRequest, LoginRequest, TokenResponse,
     ForgotPasswordRequest, ResetPasswordRequest,
     VerifyOTPRequest, ResendOTPRequest, VerifyOTPResponse,
+    GoogleAuthRequest
 )
 from api.services import auth_service
 from api.services import otp_service
+from api.services import google_auth_service
 from api.middleware.auth_middleware import get_current_user
 from api.models.user import UserDocument
 
@@ -59,6 +61,16 @@ async def reset_password(
 ):
     """Reset password using a valid token."""
     return await auth_service.reset_password(request.token, request.new_password, db)
+
+# ── Google OAuth ─────────────────────────────────────────────────────────────
+
+@router.post("/google", response_model=TokenResponse)
+async def google_auth(
+    request: GoogleAuthRequest,
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """Authenticate with Google OAuth ID token."""
+    return await google_auth_service.google_authenticate(request.id_token, db)
 
 # ── OTP Verification ─────────────────────────────────────────────────────────
 

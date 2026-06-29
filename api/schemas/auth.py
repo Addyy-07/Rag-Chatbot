@@ -39,3 +39,6 @@ class ResendOTPRequest(BaseModel):
 class VerifyOTPResponse(BaseModel):
     message: str
     is_verified: bool = False
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str
