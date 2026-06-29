@@ -26,6 +26,19 @@ class APISettings(BaseSettings):
     razorpay_plan_monthly: str = "plan_change_me"
     razorpay_plan_yearly: str = "plan_change_me"
     
+    # SMTP Settings
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    
+    # OTP Settings
+    otp_expiry_minutes: int = 10
+    otp_max_resend_attempts: int = 5
+    otp_max_verify_attempts: int = 5
+    otp_cooldown_seconds: int = 60
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

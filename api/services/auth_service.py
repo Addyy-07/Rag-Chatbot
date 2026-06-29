@@ -80,6 +80,13 @@ async def signup(request: SignupRequest, db: AsyncIOMotorDatabase) -> TokenRespo
     
     log.info(f"New user registered: {new_user.email} ({user_id})")
     
+    # Send verification OTP automatically after signup
+    try:
+        from api.services.otp_service import send_verification_otp
+        await send_verification_otp(new_user.email, db)
+    except Exception as e:
+        log.warning(f"Failed to send initial OTP to {new_user.email}: {e}")
+    
     return TokenResponse(
         access_token=token,
         expires_in=api_settings.jwt_expiry_minutes * 60,
@@ -87,7 +94,8 @@ async def signup(request: SignupRequest, db: AsyncIOMotorDatabase) -> TokenRespo
             "id": user_id,
             "email": new_user.email,
             "username": new_user.username,
-            "full_name": new_user.full_name
+            "full_name": new_user.full_name,
+            "is_email_verified": False,
         }
     )
 
@@ -135,7 +143,8 @@ async def login(request: LoginRequest, db: AsyncIOMotorDatabase) -> TokenRespons
             "id": str(user.id),
             "email": user.email,
             "username": user.username,
-            "full_name": user.full_name
+            "full_name": user.full_name,
+            "is_email_verified": user.is_email_verified,
         }
     )
 

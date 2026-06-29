@@ -13,7 +13,7 @@ from api.routes.auth_router import get_current_user
 from api.models.user import UserDocument
 from api.models.billing import PaymentDocument
 from api.config import api_settings
-from api.services.razorpay_service import create_subscription, cancel_subscription
+from api.services.razorpay_service import create_subscription, cancel_subscription, create_order, verify_payment_signature
 import logging
 
 log = logging.getLogger(__name__)
@@ -98,3 +98,73 @@ async def get_billing_history(
         doc["_id"] = str(doc["_id"])
         payments.append(doc)
     return payments
+
+class CreateOrderRequest(BaseModel):
+    amount: int
+    currency: str = "INR"
+
+@router.post("/create-order")
+async def api_create_order(
+    req: CreateOrderRequest,
+    current_user: UserDocument = Depends(get_current_user)
+):
+    """Creates a Razorpay order for Standard Checkout."""
+    if req.amount < 100:
+        raise HTTPException(status_code=400, detail="Amount must be at least 100 paise.")
+        
+    try:
+        # Pass user ID as receipt for tracking
+        order = create_order(amount_paise=req.amount, currency=req.currency, receipt=str(current_user.id))
+        return {
+            "order_id": order["id"],
+            "amount": order["amount"],
+            "currency": order["currency"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to create order.")
+
+class VerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+@router.post("/verify-payment")
+async def api_verify_payment(
+    req: VerifyPaymentRequest,
+    current_user: UserDocument = Depends(get_current_user),
+    db = Depends(get_database)
+):
+    """Verifies Razorpay payment signature."""
+    is_valid = verify_payment_signature(req.razorpay_order_id, req.razorpay_payment_id, req.razorpay_signature)
+    
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Invalid payment signature.")
+        
+    # Signature is valid, update user tier or record payment
+    try:
+        from datetime import datetime, timezone, timedelta
+        
+        # Example logic: granting Pro tier for 1 month for standard checkout payment
+        await db.users.update_one(
+            {"_id": current_user.id},
+            {"$set": {
+                "tier": "pro",
+                "subscription_end": datetime.now(timezone.utc) + timedelta(days=30)
+            }}
+        )
+        
+        # Record payment
+        await db.payments.insert_one({
+            "user_id": str(current_user.id),
+            "razorpay_payment_id": req.razorpay_payment_id,
+            "razorpay_order_id": req.razorpay_order_id,
+            "amount": 0, # In a real system, you'd fetch the actual amount charged from Razorpay
+            "currency": "INR",
+            "status": "captured",
+            "created_at": datetime.utcnow()
+        })
+        
+        return {"status": "success", "message": "Payment verified successfully."}
+    except Exception as e:
+        log.error(f"Error updating user after payment: {e}")
+        raise HTTPException(status_code=500, detail="Payment verified but failed to update user status.")

@@ -63,6 +63,14 @@ class UserDocument(BaseModel):
     reset_password_token: str | None = None
     reset_password_expires: datetime | None = None
     
+    # Email verification fields
+    is_email_verified: bool = False
+    otp_code: str | None = None
+    otp_expires: datetime | None = None
+    otp_resend_count: int = 0
+    otp_verify_attempts: int = 0
+    otp_last_sent_at: datetime | None = None
+    
     model_config = ConfigDict(
         populate_by_name=True,
         arbitrary_types_allowed=True,

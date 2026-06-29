@@ -58,3 +58,39 @@ def verify_webhook_signature(payload_body: bytes, signature: str) -> bool:
     ).hexdigest()
     
     return hmac.compare_digest(expected_signature, signature)
+
+def create_order(amount_paise: int, currency: str = "INR", receipt: str = None) -> dict:
+    """
+    Create an order for standard checkout.
+    """
+    try:
+        data = {
+            "amount": amount_paise,
+            "currency": currency,
+        }
+        if receipt:
+            data["receipt"] = receipt
+            
+        order = client.order.create(data=data)
+        return order
+    except Exception as e:
+        log.error(f"Failed to create razorpay order: {e}")
+        raise e
+
+def verify_payment_signature(order_id: str, payment_id: str, signature: str) -> bool:
+    """
+    Verify payment signature for Standard Checkout.
+    """
+    try:
+        secret = api_settings.razorpay_key_secret
+        msg = f"{order_id}|{payment_id}"
+        expected_signature = hmac.new(
+            key=secret.encode('utf-8'),
+            msg=msg.encode('utf-8'),
+            digestmod=hashlib.sha256
+        ).hexdigest()
+        
+        return hmac.compare_digest(expected_signature, signature)
+    except Exception as e:
+        log.error(f"Failed to verify payment signature: {e}")
+        return False

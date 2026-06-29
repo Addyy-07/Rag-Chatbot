@@ -63,3 +63,18 @@ async def get_current_user(
         )
         
     return user
+
+
+async def get_verified_user(
+    current_user: UserDocument = Depends(get_current_user),
+) -> UserDocument:
+    """
+    Extends get_current_user to also require email verification.
+    Use this dependency to guard premium features (upload, chat, billing).
+    """
+    if not current_user.is_email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified. Please verify your email to access this feature.",
+        )
+    return current_user
